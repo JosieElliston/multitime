@@ -31,19 +31,34 @@ pub struct Op {
 }
 
 impl Op {
-    pub const ID: Self = Self { left: Perm::ID, right: Perm::ID };
+    pub const ID: Self = Self {
+        left: Perm::ID,
+        right: Perm::ID,
+    };
 
     pub fn new(perm: Perm, inversion: Inversion) -> Self {
         match inversion {
-            Inversion::Normal => Self { left: Perm::ID, right: perm },
-            Inversion::Inverse => Self { left: perm.inv(), right: Perm::ID },
+            Inversion::Normal => Self {
+                left: Perm::ID,
+                right: perm,
+            },
+            Inversion::Inverse => Self {
+                left: perm.inv(),
+                right: Perm::ID,
+            },
         }
     }
     pub fn then(&self, next: &Self) -> Self {
-        Self { left: next.left.then(&self.left), right: self.right.then(&next.right) }
+        Self {
+            left: next.left.then(&self.left),
+            right: self.right.then(&next.right),
+        }
     }
     pub fn pow(&self, n: i32) -> Self {
-        Self { left: self.left.pow(n), right: self.right.pow(n) }
+        Self {
+            left: self.left.pow(n),
+            right: self.right.pow(n),
+        }
     }
     pub fn apply(&self, state: &Perm) -> Perm {
         self.left.then(state).then(&self.right)
@@ -67,7 +82,11 @@ pub enum TokenKind {
     Comment,
     Open,
     Sep,
-    Close { kind: GroupKind, open: usize, has_multiplier: bool },
+    Close {
+        kind: GroupKind,
+        open: usize,
+        has_multiplier: bool,
+    },
     /// Ends a group that is malformed, such as `[R]`. Plays its contents.
     BadClose,
     /// Closing bracket or separator that doesn't belong to any group.
@@ -143,7 +162,11 @@ impl Frame {
         let op = match &self.lhs {
             Some((c, a)) => {
                 let out = a.then(&self.op).then(&a.pow(-1));
-                if *c == ',' { out.then(&self.op.pow(-1)) } else { out }
+                if *c == ',' {
+                    out.then(&self.op.pow(-1))
+                } else {
+                    out
+                }
             }
             None => self.op,
         };
@@ -209,7 +232,9 @@ pub fn parse_move(s: &str) -> Option<Perm> {
     let mult = parse_multiplier(rest)?;
     let is_face = puzzle::face_normal(family).is_some();
     let layer = |s: &str| -> Option<u32> {
-        s.bytes().all(|b| b.is_ascii_digit()).then(|| s.parse().ok())?
+        s.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| s.parse().ok())?
     };
     let (lo, hi) = if rotation {
         if !prefix.is_empty() || wide || !is_face {
@@ -220,7 +245,11 @@ pub fn parse_move(s: &str) -> Option<Perm> {
         if !prefix.is_empty() {
             return None;
         }
-        if "xyz".contains(family) { (1, 3) } else { (2, 2) }
+        if "xyz".contains(family) {
+            (1, 3)
+        } else {
+            (2, 2)
+        }
     } else if prefix.is_empty() {
         (1, if wide { 2 } else { 1 })
     } else if let Some((a, b)) = prefix.split_once('-') {
@@ -258,11 +287,20 @@ pub fn parse(text: &str) -> Parsed {
             let nested_niss = kind == GroupKind::Niss && !stack.is_empty();
             let dead = in_dead || nested_niss;
             stack.push(Frame {
-                group: OpenGroup { kind, span: start..i, sep: None, dead },
+                group: OpenGroup {
+                    kind,
+                    span: start..i,
+                    sep: None,
+                    dead,
+                },
                 lhs: None,
                 op: Op::ID,
             });
-            if nested_niss { TokenKind::Error } else { TokenKind::Open }
+            if nested_niss {
+                TokenKind::Error
+            } else {
+                TokenKind::Open
+            }
         } else if matches!(c, ')' | ']') {
             i += 1;
             let matches_top = stack
@@ -324,7 +362,10 @@ pub fn parse(text: &str) -> Parsed {
                 TokenKind::Error
             }
         };
-        tokens.push(Token { span: start..i, kind });
+        tokens.push(Token {
+            span: start..i,
+            kind,
+        });
     }
 
     let mut op = top;
@@ -337,7 +378,12 @@ pub fn parse(text: &str) -> Parsed {
         inner = f.played();
     }
     op = op.then(&inner);
-    Parsed { op, tokens, open, in_comment }
+    Parsed {
+        op,
+        tokens,
+        open,
+        in_comment,
+    }
 }
 
 fn opener(s: &str) -> Option<(GroupKind, usize)> {
@@ -352,8 +398,14 @@ fn opener(s: &str) -> Option<(GroupKind, usize)> {
 
 /// Space needed between two texts so that their tokens stay separate.
 pub fn padding(before: &str, after: &str) -> &'static str {
-    let left = before.chars().next_back().is_some_and(|c| !c.is_whitespace() && !"([".contains(c));
-    let right = after.chars().next().is_some_and(|c| !c.is_whitespace() && !")],:".contains(c));
+    let left = before
+        .chars()
+        .next_back()
+        .is_some_and(|c| !c.is_whitespace() && !"([".contains(c));
+    let right = after
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace() && !")],:".contains(c));
     if left && right { " " } else { "" }
 }
 
@@ -391,9 +443,11 @@ pub fn twist(text: &str, caret: usize, mv: &str, inversion: Inversion) -> (Strin
     let (new, end) = if inversion == Inversion::Inverse && before.open.is_empty() {
         // Extend a `^()` directly before the insertion point.
         let close = before.tokens.last().and_then(|t| match t.kind {
-            TokenKind::Close { kind: GroupKind::Niss, has_multiplier: false, .. } => {
-                Some(t.span.end - 1)
-            }
+            TokenKind::Close {
+                kind: GroupKind::Niss,
+                has_multiplier: false,
+                ..
+            } => Some(t.span.end - 1),
             _ => None,
         });
         let multiplied = text[at..].starts_with(|c: char| c.is_ascii_digit() || c == '\'');
@@ -411,7 +465,11 @@ pub fn twist(text: &str, caret: usize, mv: &str, inversion: Inversion) -> (Strin
     } else {
         insert_padded(text, at, mv)
     };
-    let caret = if blocking.is_some() { caret + (new.len() - text.len()) } else { end };
+    let caret = if blocking.is_some() {
+        caret + (new.len() - text.len())
+    } else {
+        end
+    };
     (new, caret)
 }
 
@@ -486,7 +544,9 @@ pub fn delete(text: &str, caret: usize, forward: bool) -> Option<(String, usize)
         {
             after = a;
         }
-    } else if !before.is_empty() && !before.ends_with(|c: char| c.is_whitespace() || "([".contains(c)) {
+    } else if !before.is_empty()
+        && !before.ends_with(|c: char| c.is_whitespace() || "([".contains(c))
+    {
         space = " ";
     }
     Some((format!("{before}{space}{after}"), before.len()))
@@ -518,7 +578,11 @@ fn groups(text: &str, tokens: &[Token]) -> Vec<Group> {
         let s = &text[t.span.clone()];
         if opener(s).is_some() {
             let span = t.span.clone();
-            stack.push(Group { outer: span.start..last, members: vec![i], inner: span.end..last });
+            stack.push(Group {
+                outer: span.start..last,
+                members: vec![i],
+                inner: span.end..last,
+            });
         } else if t.kind == TokenKind::Sep {
             stack.last_mut().expect("in a group").members.push(i);
         } else if s.starts_with([')', ']']) && t.kind != TokenKind::Stray {
@@ -538,15 +602,22 @@ fn groups(text: &str, tokens: &[Token]) -> Vec<Group> {
 pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
     let tokens = parse(text).tokens;
     let line = |o: usize| text[..o].matches('\n').count();
-    let index = tokens.iter().position(|t| t.span.contains(&off)).or_else(|| {
-        let dist =
-            |t: &Token| t.span.start.saturating_sub(off).max(off.saturating_sub(t.span.end - 1));
-        let on_line = tokens.iter().enumerate().filter(|(_, t)| {
-            line(t.span.start) == line(off)
-                || (t.kind == TokenKind::Comment && line(t.span.end) == line(off))
-        });
-        on_line.min_by_key(|(_, t)| dist(t)).map(|(i, _)| i)
-    })?;
+    let index = tokens
+        .iter()
+        .position(|t| t.span.contains(&off))
+        .or_else(|| {
+            let dist = |t: &Token| {
+                t.span
+                    .start
+                    .saturating_sub(off)
+                    .max(off.saturating_sub(t.span.end - 1))
+            };
+            let on_line = tokens.iter().enumerate().filter(|(_, t)| {
+                line(t.span.start) == line(off)
+                    || (t.kind == TokenKind::Comment && line(t.span.end) == line(off))
+            });
+            on_line.min_by_key(|(_, t)| dist(t)).map(|(i, _)| i)
+        })?;
     let groups = groups(text, &tokens);
     if let Some(g) = groups.iter().find(|g| g.members.contains(&index)) {
         return Some(match unit {
@@ -570,7 +641,10 @@ pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
     }
     // Not a bracket, even a nested NISS one (an error), nor a comment.
     let plain = |i: usize| {
-        let kind = matches!(tokens[i].kind, TokenKind::Move | TokenKind::Pause | TokenKind::Error);
+        let kind = matches!(
+            tokens[i].kind,
+            TokenKind::Move | TokenKind::Pause | TokenKind::Error
+        );
         kind && !groups.iter().any(|g| g.members.contains(&i))
     };
     if !plain(index) {

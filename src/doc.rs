@@ -53,8 +53,16 @@ impl Default for Doc {
 impl Doc {
     pub fn new(root_text: &str) -> Self {
         let root = SegId(0);
-        let seg = Segment { parent: None, children: vec![], text: String::new() };
-        let mut doc = Self { segs: BTreeMap::from([(root, seg)]), root, next: 1 };
+        let seg = Segment {
+            parent: None,
+            children: vec![],
+            text: String::new(),
+        };
+        let mut doc = Self {
+            segs: BTreeMap::from([(root, seg)]),
+            root,
+            next: 1,
+        };
         doc.set_text(root, root_text.to_owned());
         doc.normalize();
         doc
@@ -92,7 +100,10 @@ impl Doc {
         out
     }
     pub fn end(&self, seg: SegId) -> Pos {
-        Pos { seg, off: self.get(seg).text.len() }
+        Pos {
+            seg,
+            off: self.get(seg).text.len(),
+        }
     }
     /// The segment and its siblings, in order.
     pub fn siblings(&self, id: SegId) -> &[SegId] {
@@ -115,7 +126,14 @@ impl Doc {
     pub fn add_child(&mut self, parent: SegId, text: String) -> SegId {
         let id = SegId(self.next);
         self.next += 1;
-        self.segs.insert(id, Segment { parent: Some(parent), children: vec![], text });
+        self.segs.insert(
+            id,
+            Segment {
+                parent: Some(parent),
+                children: vec![],
+                text,
+            },
+        );
         self.get_mut(parent).children.push(id);
         id
     }
@@ -142,7 +160,12 @@ impl Doc {
     /// Adds an empty sibling right after a segment other than the root.
     pub fn add_sibling(&mut self, id: SegId) -> Option<SegId> {
         let parent = self.get(id).parent?;
-        let i = self.get(parent).children.iter().position(|c| *c == id).expect("is parent's child");
+        let i = self
+            .get(parent)
+            .children
+            .iter()
+            .position(|c| *c == id)
+            .expect("is parent's child");
         Some(self.insert_child(parent, i + 1))
     }
     /// Adds an empty child at an index among the children.

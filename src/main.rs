@@ -2,7 +2,11 @@ use multitime::{doc::Doc, ui::App};
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
-    let path = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "solve.txt".to_owned()));
+    let path = PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .unwrap_or_else(|| "solve.txt".to_owned()),
+    );
     let doc = match std::fs::read_to_string(&path) {
         Ok(s) => Doc::from_file(&s).unwrap_or_else(|e| {
             eprintln!("{}: {e}", path.display());

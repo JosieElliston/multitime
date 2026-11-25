@@ -6,6 +6,6 @@ pub mod doc;
 pub mod notation;
 pub mod puzzle;
 pub mod session;
-pub mod ui;
 #[cfg(test)]
 mod tests;
+pub mod ui;

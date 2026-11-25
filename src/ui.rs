@@ -20,9 +20,15 @@ const NISS: Color32 = Color32::from_rgb(255, 120, 200);
 const ERROR: Color32 = Color32::from_rgb(255, 80, 80);
 const DIM: Color32 = Color32::from_gray(120);
 /// Caret in both the text box and the timeline.
-const CARET: Stroke = Stroke { width: 2.0, color: Color32::WHITE };
+const CARET: Stroke = Stroke {
+    width: 2.0,
+    color: Color32::WHITE,
+};
 /// Where hovering would put the caret.
-const GHOST_CARET: Stroke = Stroke { width: 2.0, color: Color32::from_gray(130) };
+const GHOST_CARET: Stroke = Stroke {
+    width: 2.0,
+    color: Color32::from_gray(130),
+};
 const EDITOR: &str = "path editor";
 const FONT: FontId = FontId::monospace(15.0);
 /// Widths of a `MARK` and an `END` in the text box.
@@ -50,7 +56,10 @@ enum Mode {
 enum TimelineAction {
     Go(Pos),
     /// Selects from `from`, or else from where the selection already starts.
-    Select { from: Option<Pos>, to: Pos },
+    Select {
+        from: Option<Pos>,
+        to: Pos,
+    },
     /// A double or triple click selected a unit.
     StartUnits(Unit, (Pos, Pos)),
     /// The drag after one reached a unit.
@@ -96,7 +105,10 @@ fn token_color(kind: TokenKind) -> Color32 {
         TokenKind::Move => MOVE,
         TokenKind::Pause => DIM,
         TokenKind::Comment => COMMENT,
-        TokenKind::Close { kind: GroupKind::Niss, .. } => NISS,
+        TokenKind::Close {
+            kind: GroupKind::Niss,
+            ..
+        } => NISS,
         TokenKind::Open | TokenKind::Sep | TokenKind::Close { .. } => GROUP,
         TokenKind::BadClose | TokenKind::Stray | TokenKind::Error => ERROR,
     }
@@ -165,8 +177,12 @@ impl App {
             o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
         });
         ui.memory_mut(|m| m.request_focus(Id::unique(EDITOR)));
-        let (delay, dist) = ui
-            .options(|o| (o.input_options.max_double_click_delay, o.input_options.max_click_dist));
+        let (delay, dist) = ui.options(|o| {
+            (
+                o.input_options.max_double_click_delay,
+                o.input_options.max_click_dist,
+            )
+        });
         ui.input(|i| {
             for event in &i.events {
                 if let Event::PointerButton {
@@ -182,8 +198,12 @@ impl App {
                     self.unit_drag = None;
                 }
                 match event {
-                    Event::PointerMoved(_) | Event::PointerButton { .. } => self.ignore_hover = false,
-                    Event::Key { pressed: true, .. } | Event::Text(_) | Event::Cut
+                    Event::PointerMoved(_) | Event::PointerButton { .. } => {
+                        self.ignore_hover = false
+                    }
+                    Event::Key { pressed: true, .. }
+                    | Event::Text(_)
+                    | Event::Cut
                     | Event::Paste(_) => self.ignore_hover = true,
                     _ => {}
                 }
@@ -191,24 +211,34 @@ impl App {
         });
         self.shortcuts(ui);
         // Edits since last frame can invalidate the preview.
-        self.preview = self.preview.filter(|p| !self.ignore_hover && self.is_valid(*p));
+        self.preview = self
+            .preview
+            .filter(|p| !self.ignore_hover && self.is_valid(*p));
         let mut preview = None;
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("timeline").resizable(true).default_size(190.0).show(ui, |ui| {
-            self.timeline(ui, &mut preview);
-        });
-        egui::Panel::right("views").resizable(true).default_size(420.0).show(ui, |ui| {
-            let height = ui.available_height() / self.views.len() as f32;
-            for i in 0..self.views.len() {
-                self.view(ui, i, height);
-            }
-        });
+        egui::Panel::bottom("timeline")
+            .resizable(true)
+            .default_size(190.0)
+            .show(ui, |ui| {
+                self.timeline(ui, &mut preview);
+            });
+        egui::Panel::right("views")
+            .resizable(true)
+            .default_size(420.0)
+            .show(ui, |ui| {
+                let height = ui.available_height() / self.views.len() as f32;
+                for i in 0..self.views.len() {
+                    self.view(ui, i, height);
+                }
+            });
         egui::CentralPanel::default().show(ui, |ui| {
             // The text box is at least as tall as the panel, and the panel scrolls.
             let height = ui.available_height();
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                self.editor(ui, height, &mut preview);
-            });
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    self.editor(ui, height, &mut preview);
+                });
         });
         preview = preview.filter(|_| !self.ignore_hover);
         if preview != self.preview {
@@ -275,7 +305,13 @@ impl App {
         ui.input_mut(|input| {
             input.events.retain(|event| match *event {
                 Event::Text(_) | Event::Ime(_) => false,
-                Event::Key { key, physical_key, pressed: true, repeat, modifiers } => {
+                Event::Key {
+                    key,
+                    physical_key,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                } => {
                     if modifiers.command {
                         // Select all, and egui's zoom.
                         return matches!(
@@ -285,8 +321,14 @@ impl App {
                     }
                     if !modifiers.ctrl && !modifiers.alt {
                         let key = match key {
-                            Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
-                            | Key::Home | Key::End | Key::Backspace | Key::Delete => key,
+                            Key::ArrowLeft
+                            | Key::ArrowRight
+                            | Key::ArrowUp
+                            | Key::ArrowDown
+                            | Key::Home
+                            | Key::End
+                            | Key::Backspace
+                            | Key::Delete => key,
                             _ => physical_key.unwrap_or(key),
                         };
                         self.twist_mode_key(view, key, modifiers.shift, repeat);
@@ -345,15 +387,32 @@ impl App {
             let seg = s.caret().seg;
             let has_parent = s.doc().get(seg).parent.is_some();
             let button = |ui: &mut Ui, enabled, text: &str, hint: &str| {
-                ui.add_enabled(enabled, egui::Button::new(text)).on_hover_text(hint).clicked()
+                ui.add_enabled(enabled, egui::Button::new(text))
+                    .on_hover_text(hint)
+                    .clicked()
             };
-            if button(ui, true, "Fork", "Type a `>`, even in twist mode (Cmd+Enter)") {
+            if button(
+                ui,
+                true,
+                "Fork",
+                "Type a `>`, even in twist mode (Cmd+Enter)",
+            ) {
                 s.fork();
             }
-            if button(ui, has_parent, "Join", "Delete the bubble before this segment (Cmd+J)") {
+            if button(
+                ui,
+                has_parent,
+                "Join",
+                "Delete the bubble before this segment (Cmd+J)",
+            ) {
                 s.join();
             }
-            if button(ui, has_parent, "Delete branch", "Delete this segment and all after it") {
+            if button(
+                ui,
+                has_parent,
+                "Delete branch",
+                "Delete this segment and all after it",
+            ) {
                 s.delete_branch();
             }
             ui.separator();
@@ -390,7 +449,9 @@ impl App {
         let anchor = if self.session.anchor() == self.session.caret() {
             caret
         } else {
-            self.session.offset_of(self.session.anchor()).expect("on path")
+            self.session
+                .offset_of(self.session.anchor())
+                .expect("on path")
         };
         let range = egui::text::CCursorRange {
             secondary: egui::text::CCursor::new(text[..anchor].chars().count()),
@@ -450,7 +511,9 @@ impl App {
         if out.response.changed() {
             let caret = range.map_or(text.len(), |r| byte(r.primary));
             let clipboard = ui.input(|i| {
-                i.events.iter().any(|e| matches!(e, Event::Cut | Event::Paste(_)))
+                i.events
+                    .iter()
+                    .any(|e| matches!(e, Event::Cut | Event::Paste(_)))
             });
             if clipboard {
                 self.session.edit_once(&text, caret);
@@ -484,7 +547,11 @@ impl App {
             }
             byte(c)
         };
-        let unit = if self.press.0 == 2 { Unit::Token } else { Unit::Run };
+        let unit = if self.press.0 == 2 {
+            Unit::Token
+        } else {
+            Unit::Run
+        };
         if pressed
             && !shift
             && self.press.0 >= 2
@@ -492,7 +559,11 @@ impl App {
             && let Some(anchor) =
                 pointer.and_then(|p| self.session.unit_at_offset(char_at(p), unit))
         {
-            self.unit_drag = Some(UnitDrag { unit, anchor, timeline: false });
+            self.unit_drag = Some(UnitDrag {
+                unit,
+                anchor,
+                timeline: false,
+            });
         }
         let unit_drag = self.unit_drag.filter(|d| !d.timeline && (down || released));
         if let Some(d) = unit_drag {
@@ -520,11 +591,19 @@ impl App {
                 for (b, seg) in bubbles {
                     if b.start < new && new < b.end {
                         let sibs = self.session.doc().siblings(seg);
-                        let active = b.start + 1 + sibs.iter().position(|s| *s == seg).expect("sibling");
+                        let active =
+                            b.start + 1 + sibs.iter().position(|s| *s == seg).expect("sibling");
                         new = if vertical {
                             let stops = [b.start, active, b.end];
-                            stops.into_iter().min_by_key(|s| s.abs_diff(new)).expect("nonempty")
-                        } else if if pointer { new - b.start > b.end - new } else { new > caret } {
+                            stops
+                                .into_iter()
+                                .min_by_key(|s| s.abs_diff(new))
+                                .expect("nonempty")
+                        } else if if pointer {
+                            new - b.start > b.end - new
+                        } else {
+                            new > caret
+                        } {
                             b.end
                         } else {
                             b.start
@@ -552,15 +631,22 @@ impl App {
         // egui only follows carets that it moved itself.
         if moved {
             let c = egui::text::CCursor::new(caret_chars);
-            let rect = out.galley.pos_from_cursor(c).translate(out.galley_pos.to_vec2());
+            let rect = out
+                .galley
+                .pos_from_cursor(c)
+                .translate(out.galley_pos.to_vec2());
             ui.scroll_to_rect(rect.expand(8.0), None);
         }
 
         // egui hides its caret when the window is unfocused.
         let paint_caret = |off: usize, stroke| {
             let c = egui::text::CCursor::new(text[..off].chars().count());
-            let rect = out.galley.pos_from_cursor(c).translate(out.galley_pos.to_vec2());
-            ui.painter().vline(rect.center().x, rect.y_range().expand(1.5), stroke);
+            let rect = out
+                .galley
+                .pos_from_cursor(c)
+                .translate(out.galley_pos.to_vec2());
+            ui.painter()
+                .vline(rect.center().x, rect.y_range().expand(1.5), stroke);
         };
         paint_caret(self.session.caret_offset(), CARET);
         if let Some(pos) = self.preview.filter(|p| self.is_valid(*p))
@@ -581,8 +667,14 @@ impl App {
         for (range, seg) in self.session.bubbles() {
             let index = egui::text::CCursor::new(text[..range.start].chars().count());
             // If the line wraps at the bubble, it's on the next row.
-            let mark = egui::text::CCursor { prefer_next_row: true, ..index };
-            let rect = out.galley.pos_from_cursor(mark).translate(out.galley_pos.to_vec2());
+            let mark = egui::text::CCursor {
+                prefer_next_row: true,
+                ..index
+            };
+            let rect = out
+                .galley
+                .pos_from_cursor(mark)
+                .translate(out.galley_pos.to_vec2());
             self.bubble(ui, rect.left_center(), seg, &mut clicked, preview);
         }
         if let Some(seg) = clicked {
@@ -604,7 +696,8 @@ impl App {
         let outline = Rect::from_min_size(at - vec2(0.0, 8.5), vec2(width, 17.0));
         let stroke = Stroke::new(1.0, DIM);
         let inside = egui::StrokeKind::Inside;
-        ui.painter().rect_stroke(outline.shrink2(vec2(2.0, 0.0)), 5.0, stroke, inside);
+        ui.painter()
+            .rect_stroke(outline.shrink2(vec2(2.0, 0.0)), 5.0, stroke, inside);
         for (i, &seg) in segs.iter().enumerate() {
             let center = at + vec2(1.0 + (i as f32 + 0.5) * MARK_WIDTH, 0.0);
             let rect = Rect::from_center_size(center, vec2(MARK_WIDTH - 5.0, 13.0));
@@ -612,9 +705,11 @@ impl App {
             let is_selected = seg == active;
             let color = if is_selected { ACCENT } else { DIM };
             if is_selected || r.hovered() {
-                ui.painter().rect_filled(rect, 3.0, color.gamma_multiply(0.25));
+                ui.painter()
+                    .rect_filled(rect, 3.0, color.gamma_multiply(0.25));
             }
-            ui.painter().text(center, Align2::CENTER_CENTER, ">", FONT, color);
+            ui.painter()
+                .text(center, Align2::CENTER_CENTER, ">", FONT, color);
             if r.clicked() {
                 *clicked = Some(seg);
             }
@@ -636,7 +731,11 @@ impl App {
         let pos = self.preview.unwrap_or(self.session.caret());
         let (state, caret_inversion) = self.session.eval(pos);
         let inversion = self.views[i].mode.resolve(caret_inversion);
-        let state = if inversion == Inversion::Inverse { state.inv() } else { state };
+        let state = if inversion == Inversion::Inverse {
+            state.inv()
+        } else {
+            state
+        };
 
         ui.push_id(("view", i), |ui| {
             let top = ui.cursor().top();
@@ -661,7 +760,10 @@ impl App {
                     ui.colored_label(DIM, "preview");
                 }
             });
-            let size = vec2(ui.available_width(), (height - (ui.cursor().top() - top) - 8.0).max(60.0));
+            let size = vec2(
+                ui.available_width(),
+                (height - (ui.cursor().top() - top) - 8.0).max(60.0),
+            );
             let (rect, r) = ui.allocate_exact_size(size, Sense::click_and_drag());
             let drag = r.drag_delta();
             if drag != egui::Vec2::ZERO {
@@ -675,9 +777,14 @@ impl App {
                 Inversion::Normal => MOVE,
                 Inversion::Inverse => NISS,
             };
-            let width = if self.mode == Mode::Twist(i) { 2.0 } else { 0.5 };
+            let width = if self.mode == Mode::Twist(i) {
+                2.0
+            } else {
+                0.5
+            };
             let stroke = Stroke::new(width, border);
-            ui.painter().rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Inside);
+            ui.painter()
+                .rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Inside);
 
             let face = draw_cube(ui, rect, &state, &self.views[i], r.interact_pointer_pos());
             if r.clicked() || r.secondary_clicked() {
@@ -753,7 +860,11 @@ impl App {
                     let node = &nodes[&path[i]];
                     let text = &doc.get(path[i]).text;
                     let x0 = if i == a.0 { timeline_x(text, a.1) } else { 0.0 };
-                    let x1 = if i == b.0 { timeline_x(text, b.1) } else { node.len };
+                    let x1 = if i == b.0 {
+                        timeline_x(text, b.1)
+                    } else {
+                        node.len
+                    };
                     let half = vec2(0.0, 7.0);
                     let band = Rect::from_min_max(at(node, x0) - half, at(node, x1) + half);
                     painter.rect_filled(band, 0.0, fill);
@@ -821,13 +932,28 @@ impl App {
                             painter.circle_filled(c, 4.0, col);
                         }
                     }
-                    cells.push((c, Pos { seg, off: t.span.start }));
+                    cells.push((
+                        c,
+                        Pos {
+                            seg,
+                            off: t.span.start,
+                        },
+                    ));
                     let right = c + vec2(TIMELINE_STEP / 2.0, 0.0);
-                    stops.push((right, Pos { seg, off: t.span.end }));
+                    stops.push((
+                        right,
+                        Pos {
+                            seg,
+                            off: t.span.end,
+                        },
+                    ));
                 }
             }
             let paint_caret = |pos: Pos, stroke| {
-                let c = at(&nodes[&pos.seg], timeline_x(&doc.get(pos.seg).text, pos.off));
+                let c = at(
+                    &nodes[&pos.seg],
+                    timeline_x(&doc.get(pos.seg).text, pos.off),
+                );
                 painter.line_segment([c - vec2(0.0, 10.0), c + vec2(0.0, 10.0)], stroke);
             };
             if let Some(pos) = self.preview.filter(|p| *p != caret) {
@@ -870,10 +996,19 @@ impl App {
             };
             let (shift, pressed, down, released) = ui.input(|i| {
                 let p = &i.pointer;
-                (i.modifiers.shift, p.primary_pressed(), p.primary_down(), p.any_released())
+                (
+                    i.modifiers.shift,
+                    p.primary_pressed(),
+                    p.primary_down(),
+                    p.any_released(),
+                )
             });
             // Double and triple clicks, and drags after them, select by units.
-            let unit = if self.press.0 == 2 { Unit::Token } else { Unit::Run };
+            let unit = if self.press.0 == 2 {
+                Unit::Token
+            } else {
+                Unit::Run
+            };
             if pressed && !shift && self.press.0 >= 2 && r.is_pointer_button_down_on() {
                 let cell = cells
                     .iter()
@@ -884,7 +1019,9 @@ impl App {
             }
             if let Some(d) = self.unit_drag.filter(|d| d.timeline && (down || released)) {
                 let cell = drag_target(&cells, pointer, d.anchor.1.seg)?;
-                return Some(TimelineAction::ExtendUnits(self.session.unit_at(cell, d.unit)?));
+                return Some(TimelineAction::ExtendUnits(
+                    self.session.unit_at(cell, d.unit)?,
+                ));
             }
             if r.dragged_by(egui::PointerButton::Primary) {
                 // Like in text: a drag selects, and Shift extends instead.
@@ -901,7 +1038,10 @@ impl App {
                 return None;
             }
             if r.clicked() && shift {
-                return Some(TimelineAction::Select { from: None, to: nearest.1 });
+                return Some(TimelineAction::Select {
+                    from: None,
+                    to: nearest.1,
+                });
             }
             if r.clicked() {
                 return Some(TimelineAction::Go(nearest.1));
@@ -915,10 +1055,17 @@ impl App {
         if let Some(action) = action.inner {
             match action {
                 TimelineAction::Go(pos) => self.session.go_to(pos),
-                TimelineAction::Select { from: Some(from), to } => self.session.set_selection(from, to),
+                TimelineAction::Select {
+                    from: Some(from),
+                    to,
+                } => self.session.set_selection(from, to),
                 TimelineAction::Select { from: None, to } => self.session.extend_to(to),
                 TimelineAction::StartUnits(unit, anchor) => {
-                    self.unit_drag = Some(UnitDrag { unit, anchor, timeline: true });
+                    self.unit_drag = Some(UnitDrag {
+                        unit,
+                        anchor,
+                        timeline: true,
+                    });
                     self.session.select_units(anchor, anchor);
                 }
                 TimelineAction::ExtendUnits(target) => {
@@ -965,7 +1112,12 @@ fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
         let parsed = notation::parse(seg);
         let mut niss = vec![];
         for t in &parsed.tokens {
-            if let TokenKind::Close { kind: GroupKind::Niss, open, .. } = t.kind {
+            if let TokenKind::Close {
+                kind: GroupKind::Niss,
+                open,
+                ..
+            } = t.kind
+            {
                 niss.push(open);
             }
         }
@@ -995,7 +1147,13 @@ fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
 }
 
 /// Draws the cube and returns the face under the pointer.
-fn draw_cube(ui: &Ui, rect: Rect, state: &Perm, view: &View, pointer: Option<Pos2>) -> Option<char> {
+fn draw_cube(
+    ui: &Ui,
+    rect: Rect,
+    state: &Perm,
+    view: &View,
+    pointer: Option<Pos2>,
+) -> Option<char> {
     let scale = rect.size().min_elem() / 5.6;
     let project = |v: [f32; 3]| {
         let Vec3 { x, y, z } = view.orientation * Vec3::from_array(v);
@@ -1033,8 +1191,13 @@ fn draw_cube(ui: &Ui, rect: Rect, state: &Perm, view: &View, pointer: Option<Pos
             'F' => Color32::from_rgb(40, 180, 70),
             _ => Color32::from_rgb(50, 90, 230),
         };
-        ui.painter().add(Shape::convex_polygon(outer.clone(), Color32::BLACK, Stroke::NONE));
-        ui.painter().add(Shape::convex_polygon(quad(0.44), color, Stroke::NONE));
+        ui.painter().add(Shape::convex_polygon(
+            outer.clone(),
+            Color32::BLACK,
+            Stroke::NONE,
+        ));
+        ui.painter()
+            .add(Shape::convex_polygon(quad(0.44), color, Stroke::NONE));
         if let Some(p) = pointer {
             let inside = (0..4).all(|j| {
                 let (a, b) = (outer[j], outer[(j + 1) % 4]);

@@ -38,7 +38,11 @@ pub fn to_clipboard(text: &str) -> String {
             MARK => {}
             END => {
                 // So that pasting makes a separate bubble.
-                if out.rsplit('\n').next().is_some_and(|line| line.contains("//")) {
+                if out
+                    .rsplit('\n')
+                    .next()
+                    .is_some_and(|line| line.contains("//"))
+                {
                     out.push('\n');
                 } else if after_bubble {
                     out.push(' ');
@@ -156,7 +160,12 @@ impl Session {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot { doc: self.doc.clone(), tip: self.tip, caret: self.caret, inside: self.inside }
+        Snapshot {
+            doc: self.doc.clone(),
+            tip: self.tip,
+            caret: self.caret,
+            inside: self.inside,
+        }
     }
     fn restore(&mut self, s: Snapshot) {
         (self.doc, self.tip, self.caret, self.inside) = (s.doc, s.tip, s.caret, s.inside);
@@ -171,7 +180,10 @@ impl Session {
                 self.tip = new;
             }
             if self.caret.seg == seg && self.caret.off > off {
-                self.caret = Pos { seg: new, off: self.caret.off - off - 1 };
+                self.caret = Pos {
+                    seg: new,
+                    off: self.caret.off - off - 1,
+                };
             }
         }
         self.show(self.tip);
@@ -230,7 +242,16 @@ impl Session {
     pub fn unit_at(&self, pos: Pos, unit: Unit) -> Option<(Pos, Pos)> {
         let text = &self.doc.get(pos.seg).text;
         let r = notation::unit_at(text, pos.off, unit)?;
-        Some((Pos { seg: pos.seg, off: r.start }, Pos { seg: pos.seg, off: r.end }))
+        Some((
+            Pos {
+                seg: pos.seg,
+                off: r.start,
+            },
+            Pos {
+                seg: pos.seg,
+                off: r.end,
+            },
+        ))
     }
     /// The same for the character at an offset in the text box. A bubble's
     /// unit is the bubble, keeping its active branch.
@@ -257,7 +278,12 @@ impl Session {
             self.show(deeper);
         }
         let path = self.doc.path(self.tip);
-        let key = |p: &Pos| (path.iter().position(|s| *s == p.seg).expect("on path"), p.off);
+        let key = |p: &Pos| {
+            (
+                path.iter().position(|s| *s == p.seg).expect("on path"),
+                p.off,
+            )
+        };
         let mut start = std::cmp::min_by_key(anchor.0, target.0, key);
         let mut end = std::cmp::max_by_key(anchor.1, target.1, key);
         let text = |seg| &self.doc.get(seg).text;
@@ -289,7 +315,10 @@ impl Session {
         let j = (i as isize + delta).rem_euclid(sibs.len() as isize) as usize;
         if i != j {
             let inside = self.inside;
-            self.go_to(Pos { seg: sibs[j], off: 0 });
+            self.go_to(Pos {
+                seg: sibs[j],
+                off: 0,
+            });
             self.inside = inside;
         }
     }
@@ -302,7 +331,10 @@ impl Session {
         let i = path.iter().position(|s| *s == seg).expect("caret on path");
         let text = &self.doc.get(seg).text;
         let (gap, partway) = notation::gap(text, self.caret.off);
-        let at = |gap| Pos { seg, off: notation::gap_offset(text, gap) };
+        let at = |gap| Pos {
+            seg,
+            off: notation::gap_offset(text, gap),
+        };
         if self.inside && forward {
             return self.caret;
         }
@@ -322,7 +354,10 @@ impl Session {
             let seg = path[i - 1];
             let text = &self.doc.get(seg).text;
             let last = notation::parse(text).tokens.len();
-            Pos { seg, off: notation::gap_offset(text, last) }
+            Pos {
+                seg,
+                off: notation::gap_offset(text, last),
+            }
         } else {
             self.caret
         }
@@ -352,12 +387,20 @@ impl Session {
         let tokens = notation::parse(&self.doc.get(seg).text).tokens;
         let pos = if forward {
             match tokens.iter().find(|t| t.span.end > off) {
-                Some(t) => Pos { seg, off: t.span.end },
-                None => path.get(i + 1).map_or(self.caret, |&next| Pos { seg: next, off: 0 }),
+                Some(t) => Pos {
+                    seg,
+                    off: t.span.end,
+                },
+                None => path
+                    .get(i + 1)
+                    .map_or(self.caret, |&next| Pos { seg: next, off: 0 }),
             }
         } else {
             match tokens.iter().rev().find(|t| t.span.start < off) {
-                Some(t) => Pos { seg, off: t.span.start },
+                Some(t) => Pos {
+                    seg,
+                    off: t.span.start,
+                },
                 None if i > 0 => self.doc.end(path[i - 1]),
                 None => Pos { seg, off: 0 },
             }
@@ -369,7 +412,10 @@ impl Session {
         let pos = if forward {
             self.doc.end(self.tip)
         } else {
-            Pos { seg: self.doc.root(), off: 0 }
+            Pos {
+                seg: self.doc.root(),
+                off: 0,
+            }
         };
         self.move_caret(pos, extend);
     }
@@ -381,7 +427,11 @@ impl Session {
         let path = self.doc.path(self.tip);
         let i = path.iter().position(|s| *s == seg).expect("caret on path");
         if self.inside {
-            let pos = if forward { self.caret } else { self.doc.end(path[i - 1]) };
+            let pos = if forward {
+                self.caret
+            } else {
+                self.doc.end(path[i - 1])
+            };
             self.go_to(pos);
         } else if !forward && off == 0 && i > 0 {
             self.enter(seg);
@@ -414,9 +464,12 @@ impl Session {
         } else {
             let path = self.doc.path(self.tip);
             let i = path.iter().position(|s| *s == seg).expect("caret on path");
-            let bubble = if forward { path.get(i + 1).copied() } else { Some(seg) };
-            if let Some(seg) = bubble
-            {
+            let bubble = if forward {
+                path.get(i + 1).copied()
+            } else {
+                Some(seg)
+            };
+            if let Some(seg) = bubble {
                 self.join_into_parent(seg);
             }
         }
@@ -436,7 +489,12 @@ impl Session {
             }
             let start = at;
             at += s.text.len();
-            Span { seg, bubble, start, end: at }
+            Span {
+                seg,
+                bubble,
+                start,
+                end: at,
+            }
         };
         path.iter().map(span).collect()
     }
@@ -453,7 +511,10 @@ impl Session {
     }
     /// Offset in the text, if it's on the path.
     pub fn offset_of(&self, pos: Pos) -> Option<usize> {
-        self.spans().iter().find(|s| s.seg == pos.seg).map(|s| s.start + pos.off)
+        self.spans()
+            .iter()
+            .find(|s| s.seg == pos.seg)
+            .map(|s| s.start + pos.off)
     }
     fn offset(&self, pos: Pos) -> usize {
         self.offset_of(pos).expect("on path")
@@ -463,7 +524,10 @@ impl Session {
             return self.offset(self.caret);
         }
         let sibs = self.doc.siblings(self.caret.seg);
-        let i = sibs.iter().position(|s| *s == self.caret.seg).expect("is own sibling");
+        let i = sibs
+            .iter()
+            .position(|s| *s == self.caret.seg)
+            .expect("is own sibling");
         self.offset(self.caret) - (sibs.len() - i)
     }
     /// The position at an offset in the text, and whether it's inside a bubble.
@@ -471,17 +535,32 @@ impl Session {
         for s in self.spans() {
             if off < s.start {
                 let sibs = self.doc.siblings(s.seg);
-                return (Pos { seg: sibs[off - s.bubble - 1], off: 0 }, true);
+                return (
+                    Pos {
+                        seg: sibs[off - s.bubble - 1],
+                        off: 0,
+                    },
+                    true,
+                );
             }
             if off <= s.end {
-                return (Pos { seg: s.seg, off: off - s.start }, false);
+                return (
+                    Pos {
+                        seg: s.seg,
+                        off: off - s.start,
+                    },
+                    false,
+                );
             }
         }
         (self.doc.end(self.tip), false)
     }
     /// Each bubble's extent in the text, and its active branch.
     pub fn bubbles(&self) -> Vec<(std::ops::Range<usize>, SegId)> {
-        self.spans()[1..].iter().map(|s| (s.bubble..s.start, s.seg)).collect()
+        self.spans()[1..]
+            .iter()
+            .map(|s| (s.bubble..s.start, s.seg))
+            .collect()
     }
 
     /// Deletes a range of the text.
@@ -592,9 +671,9 @@ impl Session {
         self.anchor = None;
         let before = self.snapshot();
         let now = Instant::now();
-        let coalesce = self.typing.is_some_and(|(pos, t)| {
-            pos == self.caret && now - t < Duration::from_secs(1)
-        });
+        let coalesce = self
+            .typing
+            .is_some_and(|(pos, t)| pos == self.caret && now - t < Duration::from_secs(1));
 
         // The edit ends at the caret, which disambiguates the diff.
         let old = self.text();
@@ -603,11 +682,17 @@ impl Session {
             tail.len()
         } else {
             let pairs = old.chars().rev().zip(new.chars().rev());
-            pairs.take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum()
+            pairs
+                .take_while(|(a, b)| a == b)
+                .map(|(c, _)| c.len_utf8())
+                .sum()
         };
         let (old_head, new_head) = (&old[..old.len() - suffix], &new[..new.len() - suffix]);
         let pairs = old_head.chars().zip(new_head.chars());
-        let prefix: usize = pairs.take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum();
+        let prefix: usize = pairs
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum();
         if prefix < old_head.len() {
             self.remove(prefix, old_head.len());
             self.show(self.tip);
@@ -642,12 +727,20 @@ impl Session {
         let text = self.doc.get(seg).text.clone();
         let (gap, partway) = notation::gap(&text, off);
         let path = self.doc.path(self.tip);
-        let next = path.iter().position(|s| *s == seg).and_then(|i| path.get(i + 1));
+        let next = path
+            .iter()
+            .position(|s| *s == seg)
+            .and_then(|i| path.get(i + 1));
         // Right beside a bubble, as tokens go, it adds a branch on that side.
         let beside = if self.inside || partway {
             None
-        } else if gap == 0 && let Some(parent) = self.doc.get(seg).parent {
-            Some(self.doc.insert_child(parent, self.doc.get(parent).children.len()))
+        } else if gap == 0
+            && let Some(parent) = self.doc.get(seg).parent
+        {
+            Some(
+                self.doc
+                    .insert_child(parent, self.doc.get(parent).children.len()),
+            )
         } else if gap == notation::parse(&text).tokens.len() && next.is_some() {
             Some(self.doc.insert_child(seg, 0))
         } else {
@@ -684,7 +777,10 @@ impl Session {
         }
         if let Some(start) = self.doc.join(seg) {
             if self.caret.seg == seg {
-                self.caret = Pos { seg: start.seg, off: start.off + self.caret.off };
+                self.caret = Pos {
+                    seg: start.seg,
+                    off: start.off + self.caret.off,
+                };
                 self.inside = false;
             }
             if self.tip == seg {

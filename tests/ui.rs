@@ -35,7 +35,12 @@ fn click(h: &mut Harness<'_, App>, pos: Pos2, button: PointerButton) {
     h.event(Event::PointerMoved(pos));
     h.run_steps(1);
     for pressed in [true, false] {
-        h.event(Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
+        h.event(Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
         h.run_steps(1);
     }
     h.run_steps(3);
@@ -180,9 +185,17 @@ fn undo_while_previewing() {
 #[test]
 fn clicking_text_moves_caret() {
     let mut h = harness("R U F D B L\nR2 U2");
-    for (pos, want) in [(pos2(50.0, 50.0), 3), (pos2(24.0, 67.0), 12), (pos2(86.0, 50.0), 7)] {
+    for (pos, want) in [
+        (pos2(50.0, 50.0), 3),
+        (pos2(24.0, 67.0), 12),
+        (pos2(86.0, 50.0), 7),
+    ] {
         click(&mut h, pos, PointerButton::Primary);
-        assert!(h.state().session.caret().off.abs_diff(want) <= 1, "{:?}", h.state().session.caret());
+        assert!(
+            h.state().session.caret().off.abs_diff(want) <= 1,
+            "{:?}",
+            h.state().session.caret()
+        );
     }
     typ(&mut h, "x");
     assert!(file(&h).find('x').unwrap().abs_diff(7) <= 1, "{}", file(&h));
@@ -479,7 +492,10 @@ fn dragging_into_a_branch() {
     h.event(Event::PointerMoved(pos2(36.0, 640.0)));
     h.run_steps(2);
     assert_eq!(copied(&mut h).split_once('>').unwrap().0, "R");
-    assert_eq!(h.state().session.doc().get(h.state().session.tip()).text, "L U");
+    assert_eq!(
+        h.state().session.doc().get(h.state().session.tip()).text,
+        "L U"
+    );
     h.event(button(pos2(36.0, 640.0), false));
     h.run_steps(2);
     h.event(Event::PointerMoved(pos2(84.0, 677.0)));
@@ -507,7 +523,11 @@ fn bubbles() {
     let mut h = harness("R U F\n>\n  D B L\n>\n  L U\n");
     let caret = |h: &Harness<'_, App>| {
         let s = &h.state().session;
-        (s.doc().get(s.caret().seg).text.clone(), s.caret().off, s.inside())
+        (
+            s.doc().get(s.caret().seg).text.clone(),
+            s.caret().off,
+            s.inside(),
+        )
     };
     let at = |text: &str, off, inside| (text.to_owned(), off, inside);
     click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
@@ -568,7 +588,12 @@ fn up_and_down_keep_the_branch() {
         click(&mut h, pos2(x, 67.0), PointerButton::Primary);
         key(&mut h, Modifiers::NONE, Key::ArrowUp);
         let s = &h.state().session;
-        assert!(s.tip() == tip && s.inside() == inside && s.caret().off == off, "{x} {:?} {}", s.caret(), s.inside());
+        assert!(
+            s.tip() == tip && s.inside() == inside && s.caret().off == off,
+            "{x} {:?} {}",
+            s.caret(),
+            s.inside()
+        );
         key(&mut h, Modifiers::NONE, Key::ArrowDown);
         assert_eq!(h.state().session.tip(), tip);
     }
@@ -577,7 +602,9 @@ fn up_and_down_keep_the_branch() {
 #[test]
 fn forks_wrap() {
     let long = "R U F D ".repeat(30);
-    let mut h = harness(&format!("{long}\n>\n  F\n  >\n    {long}\n  >\n    D\n>\n  D\n"));
+    let mut h = harness(&format!(
+        "{long}\n>\n  F\n  >\n    {long}\n  >\n    D\n>\n  D\n"
+    ));
     shot(&mut h, "wrap");
     // Adjacent forks.
     let mut h = harness("R\n>\n\n  >\n    U\n  >\n    D\n>\n  F\n>\n  B\n");
@@ -611,7 +638,10 @@ fn readme_screenshot() {
     let image = h.render().unwrap();
     let m = 16;
     let (w, h) = (image.width() - 2 * m, image.height() - 2 * m);
-    image::imageops::crop_imm(&image, m, m, w, h).to_image().save(path).unwrap();
+    image::imageops::crop_imm(&image, m, m, w, h)
+        .to_image()
+        .save(path)
+        .unwrap();
 }
 
 /// Presses `n` times in quick succession, then drags through `path`.
@@ -656,9 +686,19 @@ fn selecting_text_by_units() {
         (3, pos2(x(1.0), 67.0), &[], "B' D2"),
         (3, pos2(x(7.0), 67.0), &[], "// c"),
         // A drag extends by units, and takes in whole groups.
-        (2, pos2(x(0.0), 50.0), &[pos2(x(9.0), 50.0)], "R U' [F, D B]"),
+        (
+            2,
+            pos2(x(0.0), 50.0),
+            &[pos2(x(9.0), 50.0)],
+            "R U' [F, D B]",
+        ),
         (2, pos2(x(14.0), 50.0), &[pos2(x(11.0), 50.0)], "[F, D B] L"),
-        (3, pos2(x(9.0), 50.0), &[pos2(x(1.0), 67.0)], "[F, D B] L\nB' D2"),
+        (
+            3,
+            pos2(x(9.0), 50.0),
+            &[pos2(x(1.0), 67.0)],
+            "[F, D B] L\nB' D2",
+        ),
     ];
     for &(n, pos, path, want) in cases {
         clicks(&mut h, n, pos, path);

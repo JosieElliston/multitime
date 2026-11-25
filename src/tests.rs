@@ -16,7 +16,9 @@ impl Rng {
             "R", "U", "F2", "D'", "Rw", "x", "2", "'", "(", ")", "[", "]", ":", ",", "^(", "^",
             "!(", "// hi", "\n", " ", " ", " ", " ", ".", "é", "/", "M", ")2", "&(",
         ];
-        (0..self.below(max + 1)).map(|_| BITS[self.below(BITS.len())]).collect()
+        (0..self.below(max + 1))
+            .map(|_| BITS[self.below(BITS.len())])
+            .collect()
     }
     fn off(&mut self, s: &str) -> usize {
         loop {
@@ -97,8 +99,14 @@ fn twist_invariant() {
         let inv = [Normal, Inverse][rng.below(2)];
         let mv = ["R", "U2", "F'"][rng.below(3)];
         let (new, nc) = twist(&text, c, mv, inv);
-        let want = parse(&text[..c]).op.then(&Op::new(parse_move(mv).unwrap(), inv));
-        assert_eq!(parse(&new[..nc]).op, want, "{text:?} at {c} -> {new:?} at {nc}");
+        let want = parse(&text[..c])
+            .op
+            .then(&Op::new(parse_move(mv).unwrap(), inv));
+        assert_eq!(
+            parse(&new[..nc]).op,
+            want,
+            "{text:?} at {c} -> {new:?} at {nc}"
+        );
     }
 }
 
@@ -125,7 +133,10 @@ fn forking_beside_a_bubble() {
 #[test]
 fn forking_is_typing_a_fork() {
     let mut s = Session::new(Doc::new("R U // hi"));
-    s.go_to(Pos { seg: s.doc().root(), off: 1 });
+    s.go_to(Pos {
+        seg: s.doc().root(),
+        off: 1,
+    });
     s.fork();
     assert_eq!(show(&s), "R[^>|] U // hi");
     s.fork();
@@ -133,7 +144,10 @@ fn forking_is_typing_a_fork() {
     s.undo();
     s.undo();
     // Even in a comment.
-    s.go_to(Pos { seg: s.doc().root(), off: 7 });
+    s.go_to(Pos {
+        seg: s.doc().root(),
+        off: 7,
+    });
     s.fork();
     assert_eq!(show(&s), "R U // [^>|]hi");
     // Joining works from anywhere in the segment, and keeps tokens apart.
@@ -142,7 +156,10 @@ fn forking_is_typing_a_fork() {
         if inside {
             s.enter(s.caret().seg);
         } else {
-            s.go_to(Pos { seg: s.caret().seg, off });
+            s.go_to(Pos {
+                seg: s.caret().seg,
+                off,
+            });
         }
         s.join();
         assert_eq!(show(&s), want);
@@ -201,7 +218,10 @@ fn show(s: &Session) -> String {
 #[test]
 fn bubbles() {
     let mut s = Session::new(Doc::new("R U"));
-    s.go_to(Pos { seg: s.doc().root(), off: 1 });
+    s.go_to(Pos {
+        seg: s.doc().root(),
+        off: 1,
+    });
     typ(&mut s, ">");
     assert_eq!(show(&s), "R[^>|] U");
     typ(&mut s, ">");
@@ -311,7 +331,11 @@ fn cut_and_paste_bubbles() {
             replace(&mut s, a..b, "");
             let at = s.caret_offset();
             replace(&mut s, at..at, &clip);
-            assert!(s.text().matches(MARK).count() == 3, "{clip:?}: {}", s.doc().to_file());
+            assert!(
+                s.text().matches(MARK).count() == 3,
+                "{clip:?}: {}",
+                s.doc().to_file()
+            );
             if !clip.contains("> >") {
                 assert_eq!(s.doc().to_file(), file, "{clip:?}");
             }
@@ -343,10 +367,21 @@ fn random_editing() {
             match rng.below(11) {
                 0..4 => {
                     let (a, b) = (rng.off(&text), rng.off(&text));
-                    let (a, b) = (a.min(b), if rng.below(2) == 0 { a.min(b) } else { a.max(b) });
+                    let (a, b) = (
+                        a.min(b),
+                        if rng.below(2) == 0 {
+                            a.min(b)
+                        } else {
+                            a.max(b)
+                        },
+                    );
                     if rng.below(2) == 0 {
                         let (pos, inside) = s.at_offset(a);
-                        if inside { s.enter(pos.seg) } else { s.go_to(pos) }
+                        if inside {
+                            s.enter(pos.seg)
+                        } else {
+                            s.go_to(pos)
+                        }
                     }
                     let text = s.text();
                     let (a, b) = (a.min(text.len()), b.min(text.len()));
@@ -361,7 +396,9 @@ fn random_editing() {
                     want.replace_range(a..b, &ins);
                     replace(&mut s, a..b, &ins);
                     // Away from bubbles, edits are literal.
-                    if !text[a..b].contains([MARK, END]) && !want.contains('>') && !s.text().contains('>')
+                    if !text[a..b].contains([MARK, END])
+                        && !want.contains('>')
+                        && !s.text().contains('>')
                         && (a == 0 || !text[..a].ends_with(MARK))
                     {
                         assert_eq!(s.text(), want);
@@ -455,13 +492,24 @@ fn delete_leaves_other_tokens() {
             continue;
         }
         let words = |s: &str| -> Vec<String> {
-            parse(s).tokens.iter().map(|t| s[t.span.clone()].to_owned()).collect()
+            parse(s)
+                .tokens
+                .iter()
+                .map(|t| s[t.span.clone()].to_owned())
+                .collect()
         };
         let (old, new_words) = (words(&text), words(&new));
-        let head = old.iter().zip(&new_words).take_while(|(a, b)| a == b).count();
+        let head = old
+            .iter()
+            .zip(&new_words)
+            .take_while(|(a, b)| a == b)
+            .count();
         let gone = old.len() - new_words.len();
         assert!(gone > 0, "{text:?} at {c} -> {new:?}");
-        assert!((0..=head).any(|i| old[i + gone..] == new_words[i..]), "{text:?} at {c} -> {new:?}");
+        assert!(
+            (0..=head).any(|i| old[i + gone..] == new_words[i..]),
+            "{text:?} at {c} -> {new:?}"
+        );
     }
 }
 
@@ -560,7 +608,10 @@ fn units_hold() {
         let (a, b) = (rng.off(&text), rng.off(&text));
         let r = a.min(b)..a.max(b);
         let c = close_groups(&text, r.clone());
-        assert!(c.start <= r.start && r.end <= c.end && text.get(c.clone()).is_some(), "{text:?}");
+        assert!(
+            c.start <= r.start && r.end <= c.end && text.get(c.clone()).is_some(),
+            "{text:?}"
+        );
         assert_eq!(close_groups(&text, c.clone()), c, "{text:?}");
     }
 }
@@ -582,12 +633,24 @@ fn selecting_units_across_bubbles() {
     assert_eq!(s.offset_of(s.anchor()), Some(0));
     assert_eq!(s.caret_offset(), s.text().len());
     // Backwards from `B`: the caret goes at the start.
-    let b = s.unit_at_offset(s.text().find('B').unwrap(), Unit::Token).unwrap();
-    let u = s.unit_at_offset(s.text().find('U').unwrap(), Unit::Token).unwrap();
+    let b = s
+        .unit_at_offset(s.text().find('B').unwrap(), Unit::Token)
+        .unwrap();
+    let u = s
+        .unit_at_offset(s.text().find('U').unwrap(), Unit::Token)
+        .unwrap();
     s.select_units(b, u);
     assert_eq!(s.caret_offset(), 2);
-    assert_eq!(s.offset_of(s.anchor()), Some(s.text().find('B').unwrap() + 1));
+    assert_eq!(
+        s.offset_of(s.anchor()),
+        Some(s.text().find('B').unwrap() + 1)
+    );
     // A bubble's unit is the bubble.
-    let (start, end) = s.unit_at_offset(s.bubbles()[0].0.start, Unit::Token).unwrap();
-    assert_eq!((s.offset_of(start), s.offset_of(end)), (Some(9), Some(s.bubbles()[0].0.end)));
+    let (start, end) = s
+        .unit_at_offset(s.bubbles()[0].0.start, Unit::Token)
+        .unwrap();
+    assert_eq!(
+        (s.offset_of(start), s.offset_of(end)),
+        (Some(9), Some(s.bubbles()[0].0.end))
+    );
 }

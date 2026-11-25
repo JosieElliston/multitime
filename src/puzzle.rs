@@ -69,7 +69,9 @@ impl Perm {
 
     /// Solved up to whole-cube rotation.
     pub fn is_solved(&self) -> bool {
-        self.0.chunks(9).all(|f| f.iter().all(|&s| s / 9 == f[0] / 9))
+        self.0
+            .chunks(9)
+            .all(|f| f.iter().all(|&s| s / 9 == f[0] / 9))
     }
 }
 
@@ -86,7 +88,10 @@ pub fn face_normal(face: char) -> Option<V3> {
 }
 
 pub fn face_of_normal(n: V3) -> char {
-    "RLUDFB".chars().find(|&c| face_normal(c) == Some(n)).expect("unit normal")
+    "RLUDFB"
+        .chars()
+        .find(|&c| face_normal(c) == Some(n))
+        .expect("unit normal")
 }
 
 fn dot(a: V3, b: V3) -> i32 {
