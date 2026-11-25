@@ -230,32 +230,17 @@ impl Session {
         self.go_to(self.doc.end(seg));
     }
 
-    /// Switches branches at the fork beside the caret, or else the one before.
+    /// Switches branches at the bubble before the caret, which goes to the start
+    /// of the new branch.
     pub fn cycle_sibling(&mut self, delta: isize) {
-        let Pos { seg, off } = self.caret;
-        let text = &self.doc.get(seg).text;
-        let blank = |s: &str| s.trim().is_empty() && !s.contains('\n');
-        let has_parent = self.doc.get(seg).parent.is_some();
-        let path = self.doc.path(self.tip);
-        let i = path.iter().position(|s| *s == seg).expect("caret on path");
-        let before = !(has_parent && blank(&text[..off])) && blank(&text[off..]);
-        let (inside, caret) = (self.inside, self.caret);
-        let branch = match path.get(i + 1) {
-            Some(&next) if before => next,
-            _ => seg,
-        };
-        let sibs = self.doc.siblings(branch);
-        let i = sibs.iter().position(|s| *s == branch).expect("is own sibling");
+        let seg = self.caret.seg;
+        let sibs = self.doc.siblings(seg);
+        let i = sibs.iter().position(|s| *s == seg).expect("is own sibling");
         let j = (i as isize + delta).rem_euclid(sibs.len() as isize) as usize;
-        if i == j {
-            return;
-        }
-        let new = sibs[j];
-        self.go_to(Pos { seg: new, off: 0 });
-        if branch == seg {
+        if i != j {
+            let inside = self.inside;
+            self.go_to(Pos { seg: sibs[j], off: 0 });
             self.inside = inside;
-        } else {
-            self.caret = caret;
         }
     }
 
@@ -355,11 +340,7 @@ impl Session {
             let i = path.iter().position(|s| *s == seg).expect("caret on path");
             let bubble = if forward { path.get(i + 1).copied() } else { Some(seg) };
             if let Some(seg) = bubble
-                && let Some(parent) = self.doc.get(seg).parent
             {
-                let text = &self.doc.get(parent).text;
-                let padding = notation::padding(text, &self.doc.get(seg).text);
-                self.doc.set_text(parent, format!("{text}{padding}"));
                 self.join_into_parent(seg);
             }
         }
@@ -575,34 +556,56 @@ impl Session {
         self.typing = (!forked).then_some((self.caret, now));
     }
 
-    pub fn split(&mut self) {
-        let before = self.snapshot();
-        let old = self.caret.seg;
-        let new = self.doc.split(self.caret);
-        if self.tip == old {
-            self.tip = new;
-        }
-        self.caret = Pos { seg: new, off: 0 };
-        self.inside = false;
-        self.record(before);
-    }
+    /// Right before or after a bubble (with only whitespace between), adds a
+    /// branch first or last in it. Otherwise types a `>`, even in a comment or
+    /// in twist mode: splits the text at the caret with a bubble, or in a
+    /// bubble, adds a branch.
     pub fn fork(&mut self) {
         let before = self.snapshot();
-        if self.inside {
-            self.insert(">");
+        let Pos { seg, off } = self.caret;
+        let text = self.doc.get(seg).text.clone();
+        let (gap, partway) = notation::gap(&text, off);
+        let path = self.doc.path(self.tip);
+        let next = path.iter().position(|s| *s == seg).and_then(|i| path.get(i + 1));
+        // Right beside a bubble, as tokens go, it adds a branch on that side.
+        let beside = if self.inside || partway {
+            None
+        } else if gap == 0 && let Some(parent) = self.doc.get(seg).parent {
+            Some(self.doc.insert_child(parent, self.doc.get(parent).children.len()))
+        } else if gap == notation::parse(&text).tokens.len() && next.is_some() {
+            Some(self.doc.insert_child(seg, 0))
         } else {
-            let pos = self.doc.fork(self.caret);
-            self.go_to(pos);
+            None
+        };
+        if let Some(new) = beside {
+            self.show(new);
+            self.enter(new);
+        } else if !self.inside && notation::parse(&text[..off]).in_comment {
+            // Since a `>` would only be text there.
+            let new = self.doc.split_at(self.caret);
+            if self.tip == seg {
+                self.tip = new;
+            }
+            (self.caret, self.inside) = (Pos { seg: new, off: 0 }, true);
+        } else {
+            self.insert(">");
         }
         self.record(before);
     }
-    /// Joins the caret's segment to its parent, deleting the bubble between.
+    /// Deletes the bubble before the caret's segment, keeping the active branch,
+    /// the same as Backspace right after it in twist mode.
     pub fn join(&mut self) {
         let before = self.snapshot();
         self.join_into_parent(self.caret.seg);
         self.record(before);
     }
+    /// Adds a space if the tokens on either side would run together.
     fn join_into_parent(&mut self, seg: SegId) {
+        if let Some(parent) = self.doc.get(seg).parent {
+            let text = &self.doc.get(parent).text;
+            let padding = notation::padding(text, &self.doc.get(seg).text);
+            self.doc.set_text(parent, format!("{text}{padding}"));
+        }
         if let Some(start) = self.doc.join(seg) {
             if self.caret.seg == seg {
                 self.caret = Pos { seg: start.seg, off: start.off + self.caret.off };

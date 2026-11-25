@@ -103,43 +103,53 @@ fn twist_invariant() {
 }
 
 #[test]
-fn cut_and_fork_preserve_state() {
-    let mut rng = Rng(77);
-    for _ in 0..100_000 {
-        let text = rng.text(14);
-        let c = rng.off(&text);
-        let k = cut(&text, c);
-        let msg = format!("{text:?} at {c}: {k:?}");
-        // Cutting through a token is the user's choice and changes the rest.
-        if c == 0 || c == text.len() || text[c..].starts_with(char::is_whitespace) {
-            let both = parse(&k.left).op.then(&parse(&k.right).op);
-            assert_eq!(both, parse(&text).op, "{msg}");
-        }
-        let mut s = Session::new(Doc::new(&text));
-        s.go_to(Pos { seg: s.doc().root(), off: c });
-        let before = s.eval(s.caret());
+fn forking_beside_a_bubble() {
+    let full = Session::new(Doc::new("R // hi\n>\nU"));
+    assert_eq!(show(&full), "R // hi\n[^>]\nU|");
+    // Before it.
+    for off in [7, 8] {
+        let mut s = full.clone();
+        s.go_to(s.at_offset(off).0);
         s.fork();
-        s.doc().check();
-        // At the end of the segment, forking keeps the whole text.
-        if !k.right.trim().is_empty() {
-            assert_eq!(s.eval(s.caret()), before, "{msg}");
-        }
+        assert_eq!(show(&s), "R // hi\n[^>|>]");
+    }
+    // After it, even after whitespace.
+    for off in [10, 11] {
+        let mut s = full.clone();
+        s.go_to(s.at_offset(off).0);
+        s.fork();
+        assert_eq!(show(&s), "R // hi\n[>^>|]");
     }
 }
 
 #[test]
-fn fork_examples() {
-    let mut s = Session::new(Doc::new("F2 [R: U D] L"));
-    s.go_to(Pos { seg: s.doc().root(), off: 8 });
+fn forking_is_typing_a_fork() {
+    let mut s = Session::new(Doc::new("R U // hi"));
+    s.go_to(Pos { seg: s.doc().root(), off: 1 });
     s.fork();
-    s.twist("F", Normal);
-    assert_eq!(s.doc().to_file(), "F2 \n>\n  [R: U D] L\n>\n  R U F\n");
-    let mut s = Session::new(Doc::new("^(A B)"));
-    s.go_to(Pos { seg: s.doc().root(), off: 3 });
-    s.split();
-    assert_eq!(s.doc().to_file(), "^(A)\n>\n  ^( B)\n");
+    assert_eq!(show(&s), "R[^>|] U // hi");
+    s.fork();
+    assert_eq!(show(&s), "R[>^>|]");
     s.undo();
-    assert_eq!(s.doc().to_file(), "^(A B)\n");
+    s.undo();
+    // Even in a comment.
+    s.go_to(Pos { seg: s.doc().root(), off: 7 });
+    s.fork();
+    assert_eq!(show(&s), "R U // [^>|]hi");
+    // Joining works from anywhere in the segment, and keeps tokens apart.
+    for (off, inside, want) in [(1, false, "R U // h|i"), (0, true, "R U // |hi")] {
+        let mut s = s.clone();
+        if inside {
+            s.enter(s.caret().seg);
+        } else {
+            s.go_to(Pos { seg: s.caret().seg, off });
+        }
+        s.join();
+        assert_eq!(show(&s), want);
+    }
+    let mut s = Session::new(Doc::new("R>U"));
+    s.join();
+    assert_eq!(show(&s), "R U|");
 }
 
 /// Edits like an editor would: replace a range of the text.
@@ -215,8 +225,9 @@ fn bubbles() {
     assert_eq!(show(&s), "R[>^>]|F[^>]D");
     assert!(s.step_bubble(false) && s.step_bubble(false) && !s.step_bubble(false));
     assert_eq!(show(&s), "R|[>^>]F[^>]D");
+    // Switching is at the bubble before the caret, which there isn't.
     s.cycle_sibling(1);
-    assert_eq!(show(&s), "R|[^>>] U");
+    assert_eq!(show(&s), "R|[>^>]F[^>]D");
 
     // Backspace in it deletes a branch.
     let mut s = full.clone();
@@ -261,7 +272,7 @@ fn bubbles() {
     // Forking in it.
     let mut s = full.clone();
     s.enter(at(&s, 2));
-    s.fork();
+    typ(&mut s, ">");
     assert_eq!(show(&s), "R[>^>|>]");
     // By tokens, joining keeps them separate.
     let mut s = Session::new(Doc::new("R>U"));
@@ -271,43 +282,18 @@ fn bubbles() {
 }
 
 #[test]
-fn forking_beside_a_bubble() {
-    for (text, at) in [("R>U", 1), ("R>U", 3), ("R >U", 1), ("R> U", 4), ("R>", 3), ("R>", 1)] {
-        let mut s = Session::new(Doc::new(text));
-        s.go_to(s.at_offset(at).0);
-        s.fork();
-        assert_eq!(s.doc().get(s.doc().root()).children.len(), 2, "{text:?} at {at}");
-        assert_eq!(s.doc().ids().count(), 3, "{text:?} at {at}");
-    }
-    // But not from another line.
-    for (text, at, want) in [("R\n>U", 1, "R[>^>]|"), ("R>\nU", 4, "R[^>]\n[>^>]|")] {
-        let mut s = Session::new(Doc::new(text));
-        s.go_to(s.at_offset(at).0);
-        s.fork();
-        assert_eq!(show(&s), want);
-    }
-}
-
-#[test]
 fn bubbles_and_comments() {
     let mut s = Session::new(Doc::new("// a > b"));
     assert_eq!(show(&s), "// a > b|");
     typ(&mut s, ">");
     assert_eq!(show(&s), "// a > b>|");
     // A comment can end at a bubble.
-    s.fork();
-    typ(&mut s, "R");
+    let mut s = Session::new(Doc::from_file("// a > b>\n>\n  R\n").unwrap());
     assert_eq!(show(&s), "// a > b>[^>]R|");
     // Uncommenting a `>` makes a bubble.
     replace(&mut s, 0..2, "");
     assert_eq!(show(&s), "| a [^>] b[^>][^>]R");
     assert_eq!(to_clipboard(&s.text()), " a > b> >R");
-    // Forking in a comment goes after it.
-    let mut s = Session::new(Doc::new("R // hi\nU"));
-    s.go_to(Pos { seg: s.doc().root(), off: 6 });
-    s.fork();
-    assert_eq!(s.doc().to_file(), "R // hi\n>\n\n  U\n>\n\n");
-    assert_eq!(Doc::from_file(&s.doc().to_file()).unwrap(), *s.doc());
 }
 
 #[test]
@@ -386,9 +372,11 @@ fn random_editing() {
                     s.step_bubble(rng.below(2) == 0);
                     s.cycle_sibling(1);
                 }
-                4 => s.split(),
-                5 => s.fork(),
-                6 => s.join(),
+                4 => typ(&mut s, ">"),
+                5 => typ(&mut s, ">>"),
+                6 => {
+                    s.step_bubble(rng.below(2) == 0);
+                }
                 7 => s.twist("R", Normal),
                 8 => {
                     s.step(rng.below(2) == 0, rng.below(2) == 0);

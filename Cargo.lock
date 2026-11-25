@@ -1936,6 +1936,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "glam",
+ "image",
 ]
 
 [[package]]

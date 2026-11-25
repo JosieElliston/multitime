@@ -1,40 +1,62 @@
 # multitime
 
-A 3x3x3 simulator for trying out fewest-moves tools for Hyperspeedcube 2, mainly a forking timeline.
+a 3x3x3 simulator for trying out FMC tools for [Hyperspeedcube 2](https://github.com/hactarCE/Hyperspeedcube/), mainly a forking timeline.
 
 ![screenshot](ss.png)
-
-## use
 
 ```sh
 cargo run [file]  # default: solve.txt
 ```
 
-### forks
+TODO: sections: input, navigation, mouse
 
-A bubble is where the text can continue in several ways. It has a `>` for each branch. The active one is highlighted, and its text is shown after the bubble.
+## elements
 
-The caret can go into a bubble. Whichever `>` it's right after becomes active. Alt+Left and Alt+Right go into and out of a bubble without changing the active branch. Up and Down don't change it either: they land on either side of a bubble, or right after its active `>`.
+there are four elements:
 
-Type a `>` to split the text with a bubble, which puts the caret in it. In a bubble, `>` adds an empty branch, so `>>` is a new branch beside the text that was there. Anything else goes after the bubble. Pasting is the same as typing. In a comment, a `>` is just text. A comment ends at a bubble.
+- two **puzzle views** show the state at the caret.
+- the **timeline** shows the full tree.
+- the **text box** shows the notation of one path down the tree.
 
-Or press Cmd+Enter to fork at the caret, or after the comment that it's in. If there's text after it, that becomes the other branch. Right before or after a bubble on the same line, it adds a branch to that one instead.
+there's one caret and one selection, shared by the text box and the timeline.
 
-In a bubble, Backspace deletes a `>` along with its branch, though the only `>` just merges its text into what came before. Adding or deleting a branch is always its own undo step. Right after a bubble, Backspace deletes the bubble: the active branch's text stays, and the other branches are deleted. Deleting a selection does the same to each bubble in it. Copying a bubble copies just the active `>`.
+## modes
 
-### text mode and twist mode
+there are two input modes: **text mode** edits by character, while **twist mode** edits by token. a token is a twist, a bracket, a comment, or a bubble.
 
-Esc cycles between text mode, twist mode on the first puzzle, and twist mode on the second. Clicking the text box or a puzzle also switches.
+esc cycles between focus on the text box and the two puzzles.
 
 | Key | Text mode | Twist mode |
 | --- | --- | --- |
-| Most keys | insert text | insert a twist (see below) |
+| Most keys | insert text | insert a twist (see [twist keys](#twist-keys)) |
 | Left, Right | move by character | move by token |
-| Up, Down | move by line | switch branches |
+| Up, Down | move by line | switch branches at the bubble before the caret |
 | Backspace, Delete | delete a character | delete a token (a bracket deletes its whole group) |
 | Home, End | go to the ends of the line | go to the ends of the path |
 
-In twist mode, a bubble counts as a token. Up and Down switch branches at the bubble that the caret is beside, or else the one before it. Hold Shift with Left, Right, Home, or End to select.
+## forks
+
+a **bubble** has a `>` for each child, with one active child.
+
+the caret can go into a bubble, and whichever `>` it's right after becomes active. to pass a bubble without changing the active branch, hold option.
+
+cmd+[ and cmd+], or clicking a `>`, also switch branches.
+
+### making forks
+
+- outside a comment or bubble, type `>` to split the timeline.
+- inside a bubble, `>` adds an empty branch.
+
+### deleting forks
+
+- in a bubble, Backspace deletes a `>` and its branch. unless it's the only `>` in which case its text is kept.
+- right after a bubble, Backspace deletes the bubble's entire subtree.
+
+### copy/paste
+
+copying a bubble copies just its active `>`.
+
+## keys
 
 These work in both modes:
 
@@ -42,20 +64,10 @@ These work in both modes:
 | --- | --- |
 | Cmd+Z, Cmd+Shift+Z | undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | select all, copy, cut, paste |
-| Cmd+Enter | fork |
-| Cmd+D | split the segment at the caret, without adding a branch |
-| Cmd+J | delete the bubble before the caret, keeping the active branch |
+| Cmd+Enter | right before a bubble, add a first branch to it; right after, a last one; otherwise type a `>`, even in a comment or in twist mode. |
+| Cmd+J | delete the bubble before the caret's segment, keeping the active branch |
 | Cmd+[, Cmd+] | switch branches |
 | Cmd+S | save |
-
-### mouse
-
-| Where | Action | Result |
-| --- | --- | --- |
-| Puzzle | right-click, left-click a sticker | turn its face clockwise, counterclockwise |
-| Puzzle | drag anywhere in the view | rotate the view like HSC |
-| Timeline | click | move the caret |
-| Timeline | drag, or Shift+click | select along a path |
 
 ### twist keys
 
@@ -66,7 +78,9 @@ These work in both modes:
 | `A D F G H J K ;` | `y' L U' F' F U R' y` |
 | `Z X C V B N M , . /` | `x' D L2' U2' D2 U2 R2' D' x x` |
 
-### notation
+Hold Shift for wide moves.
+
+## notation
 
 | Notation | Meaning |
 | --- | --- |
@@ -78,7 +92,7 @@ These work in both modes:
 | `.` | pause |
 | `// text` | comment |
 
-### files
+## files
 
 A saved file is plain text. Each branch starts with a `>` on its own line, and its contents are indented. The line breaks around the `>` aren't part of the text:
 
@@ -95,9 +109,9 @@ R' U' F D2 L
 ## dev
 
 `cargo test` also renders the UI to `target/ui-*.png`.
+`cargo test --test ui -- --ignored` renders `ss.png`.
 
 ## ref
 
-- [hsc2](https://github.com/HactarCE/Hyperspeedcube)
 - [notation](https://hypercubing.xyz/drafts/hyper-puzzle-notation/)
 - [twizzle](https://alpha.twizzle.net/edit)

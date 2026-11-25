@@ -86,9 +86,8 @@ fn typing_and_forks() {
     key(&mut h, Modifiers::NONE, Key::ArrowRight);
     typ(&mut h, "x ");
     assert_eq!(file(&h), "R U2\n>\n  x F\n");
-    key(&mut h, Modifiers::COMMAND, Key::Enter);
-    typ(&mut h, "B");
-    assert!(file(&h).contains(">\n  x \n") && file(&h).contains("B"), "{}", file(&h));
+    typ(&mut h, ">>B");
+    assert_eq!(file(&h), "R U2\n>\n  x \n  >\n    F\n  >\n    B\n");
     for _ in 0..10 {
         key(&mut h, Modifiers::COMMAND, Key::Z);
     }
@@ -162,7 +161,10 @@ fn hyperspeedcube_keys() {
 #[test]
 fn undo_while_previewing() {
     let mut h = harness("R U F");
-    key(&mut h, Modifiers::COMMAND, Key::Enter); // an empty child
+    for _ in 0..2 {
+        key(&mut h, Modifiers::NONE, Key::Escape); // to the text box
+    }
+    typ(&mut h, ">"); // an empty child
     // Its start: the root is 3 cells long, then the fork.
     let pos = pos2(36.0 + 12.0 * 4.0, 625.0);
     h.event(Event::PointerMoved(pos));
@@ -576,4 +578,32 @@ fn forks_wrap() {
     // Adjacent forks.
     let mut h = harness("R\n>\n\n  >\n    U\n  >\n    D\n>\n  F\n>\n  B\n");
     shot(&mut h, "adjacent");
+}
+
+/// Renders the README's screenshot: `cargo test --test ui -- --ignored`.
+#[test]
+#[ignore]
+fn readme_screenshot() {
+    let app = App::new(Doc::from_file(FILE).unwrap(), "/dev/null".into());
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(900.0, 600.0))
+        .with_pixels_per_point(2.0)
+        .with_accessibility_check(false)
+        .wgpu()
+        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    h.run_steps(3);
+    // Select the second F2L pair, with the caret partway into the branch.
+    for _ in 0..3 {
+        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    }
+    key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
+    key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
+    h.event(Event::PointerMoved(pos2(-10.0, -10.0)));
+    h.run_steps(3);
+    let path = format!("{}/ss.png", env!("CARGO_MANIFEST_DIR"));
+    // Without the harness's margin.
+    let image = h.render().unwrap();
+    let m = 16;
+    let (w, h) = (image.width() - 2 * m, image.height() - 2 * m);
+    image::imageops::crop_imm(&image, m, m, w, h).to_image().save(path).unwrap();
 }

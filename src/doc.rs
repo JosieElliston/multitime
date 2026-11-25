@@ -1,7 +1,6 @@
 //! The ground truth: a tree of notation strings. Segments fork only at ends.
 //! Never touches a puzzle.
 
-use crate::notation;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -140,38 +139,19 @@ impl Doc {
         let (left, right) = (left.to_owned(), right.to_owned());
         self.split_into(pos.seg, left, right)
     }
-    pub fn split(&mut self, pos: Pos) -> SegId {
-        let c = notation::cut(&self.get(pos.seg).text, pos.off);
-        self.split_into(pos.seg, c.left, c.right)
-    }
     /// Adds an empty sibling right after a segment other than the root.
     pub fn add_sibling(&mut self, id: SegId) -> Option<SegId> {
         let parent = self.get(id).parent?;
+        let i = self.get(parent).children.iter().position(|c| *c == id).expect("is parent's child");
+        Some(self.insert_child(parent, i + 1))
+    }
+    /// Adds an empty child at an index among the children.
+    pub fn insert_child(&mut self, parent: SegId, index: usize) -> SegId {
         let new = self.add_child(parent, String::new());
         let children = &mut self.get_mut(parent).children;
         children.pop();
-        let i = children.iter().position(|c| *c == id).expect("is parent's child");
-        children.insert(i + 1, new);
-        Some(new)
-    }
-
-    /// Adds an empty branch that continues from `pos`. Right after or before a
-    /// fork on the same line, it's a branch of that fork.
-    pub fn fork(&mut self, pos: Pos) -> Pos {
-        let c = notation::cut(&self.get(pos.seg).text, pos.off);
-        let blank = |s: &str| s.trim().is_empty() && !s.contains('\n');
-        let at = if let Some(parent) = self.get(pos.seg).parent
-            && blank(&c.left)
-        {
-            parent
-        } else if blank(&c.right) {
-            pos.seg
-        } else {
-            self.split_into(pos.seg, c.left, c.right);
-            pos.seg
-        };
-        let (text, off) = c.fork;
-        Pos { seg: self.add_child(at, text), off }
+        children.insert(index, new);
+        new
     }
 
     /// Merges a segment into its parent, deleting its siblings. Returns where that text starts.

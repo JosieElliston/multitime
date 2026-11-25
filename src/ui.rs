@@ -203,9 +203,6 @@ impl App {
         if key(cmd, Key::Enter) {
             s.fork();
         }
-        if key(cmd, Key::D) {
-            s.split();
-        }
         if key(cmd, Key::J) {
             s.join();
         }
@@ -314,13 +311,10 @@ impl App {
             let button = |ui: &mut Ui, enabled, text: &str, hint: &str| {
                 ui.add_enabled(enabled, egui::Button::new(text)).on_hover_text(hint).clicked()
             };
-            if button(ui, true, "Fork", "New branch from the caret (Cmd+Enter)") {
+            if button(ui, true, "Fork", "Type a `>`, even in twist mode (Cmd+Enter)") {
                 s.fork();
             }
-            if button(ui, true, "Split", "Break the segment at the caret (Cmd+D)") {
-                s.split();
-            }
-            if button(ui, has_parent, "Join", "Delete the bubble before the caret, keeping the active branch (Cmd+J)") {
+            if button(ui, has_parent, "Join", "Delete the bubble before this segment (Cmd+J)") {
                 s.join();
             }
             if button(ui, has_parent, "Delete branch", "Delete this segment and all after it") {
