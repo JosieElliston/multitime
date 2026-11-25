@@ -1,8 +1,8 @@
 # multitime
 
-A 3x3x3 simulator for trying out fewest-moves tools for Hyperspeedcube 2, mainly a timeline that forks.
+A 3x3x3 simulator for trying out fewest-moves tools for Hyperspeedcube 2, mainly a forking timeline.
 
-The notation is the ground truth: the puzzle shows whatever the text before the caret does.
+![screenshot](ss.png)
 
 ## use
 
