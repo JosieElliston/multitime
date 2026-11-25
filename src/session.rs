@@ -3,6 +3,7 @@
 use crate::doc::{Doc, Pos, SegId};
 use crate::notation::{self, Inversion, Parsed};
 use crate::puzzle::Perm;
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,18 +22,64 @@ impl InversionMode {
     }
 }
 
+/// The text box's text is the segments of the path, with a fork between two of
+/// them written as a bubble: a `MARK` for each branch, then an `END`. The caret
+/// is inside of a bubble when it's right after a `MARK`, whose branch is then
+/// the active one.
+pub const MARK: char = '\x01';
+pub const END: char = '\x02';
+
+/// The text box's text as it's copied. Only the active branch of a bubble is.
+pub fn to_clipboard(text: &str) -> String {
+    let mut out = String::new();
+    let mut after_bubble = false;
+    for c in text.chars() {
+        match c {
+            MARK => {}
+            END => {
+                // So that pasting makes a separate bubble.
+                if out.rsplit('\n').next().is_some_and(|line| line.contains("//")) {
+                    out.push('\n');
+                } else if after_bubble {
+                    out.push(' ');
+                }
+                out.push('>');
+            }
+            c => out.push(c),
+        }
+        if c != MARK {
+            after_bubble = c == END;
+        }
+    }
+    out
+}
+
+/// A stretch of the text box's text. A bubble's is the one before its segment.
+struct Span {
+    seg: SegId,
+    bubble: usize,
+    start: usize,
+    end: usize,
+}
+
 #[derive(Debug, Clone)]
 struct Snapshot {
     doc: Doc,
     tip: SegId,
     caret: Pos,
+    inside: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct Session {
     doc: Doc,
+    /// Leaf that the path goes to.
     tip: SegId,
+    /// Which child each segment's path last went to. Can be stale.
+    active: BTreeMap<SegId, SegId>,
     caret: Pos,
+    /// The caret is inside of the bubble before it, rather than after it.
+    inside: bool,
     /// Fixed end of the selection. The caret is the other end. On the path.
     anchor: Option<Pos>,
     undo: Vec<Snapshot>,
@@ -43,13 +90,21 @@ pub struct Session {
 
 impl Session {
     pub fn new(doc: Doc) -> Self {
-        // Start on the first branch.
-        let mut tip = doc.root();
-        while let Some(c) = doc.get(tip).children.first() {
-            tip = *c;
-        }
-        let caret = doc.end(tip);
-        Self { doc, tip, caret, anchor: None, undo: vec![], redo: vec![], typing: None }
+        let root = doc.root();
+        let mut s = Self {
+            caret: doc.end(root),
+            doc,
+            tip: root,
+            active: BTreeMap::new(),
+            inside: false,
+            anchor: None,
+            undo: vec![],
+            redo: vec![],
+            typing: None,
+        };
+        s.show(root);
+        s.caret = s.doc.end(s.tip);
+        s
     }
 
     pub fn doc(&self) -> &Doc {
@@ -60,6 +115,30 @@ impl Session {
     }
     pub fn caret(&self) -> Pos {
         self.caret
+    }
+    pub fn inside(&self) -> bool {
+        self.inside
+    }
+
+    /// Makes the path go through a segment, and then through active branches.
+    fn show(&mut self, seg: SegId) {
+        self.tip = seg;
+        loop {
+            let children = &self.doc.get(self.tip).children;
+            let active = self.active.get(&self.tip).filter(|c| children.contains(c));
+            let Some(&next) = active.or(children.first()) else {
+                break;
+            };
+            self.tip = next;
+        }
+        for pair in self.doc.path(self.tip).windows(2) {
+            self.active.insert(pair[0], pair[1]);
+        }
+    }
+    /// Puts the caret inside of a bubble, right after the branch's mark.
+    pub fn enter(&mut self, seg: SegId) {
+        self.go_to(Pos { seg, off: 0 });
+        self.inside = self.doc.get(seg).parent.is_some();
     }
 
     /// State and inversion at a position. Derived from scratch.
@@ -77,14 +156,28 @@ impl Session {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot { doc: self.doc.clone(), tip: self.tip, caret: self.caret }
+        Snapshot { doc: self.doc.clone(), tip: self.tip, caret: self.caret, inside: self.inside }
     }
     fn restore(&mut self, s: Snapshot) {
-        (self.doc, self.tip, self.caret) = (s.doc, s.tip, s.caret);
+        (self.doc, self.tip, self.caret, self.inside) = (s.doc, s.tip, s.caret, s.inside);
+        self.show(self.tip);
         self.typing = None;
         self.anchor = None;
     }
+    /// Splits on any `>` that edits uncommented, and extends the path to a leaf.
+    fn normalize(&mut self) {
+        for (seg, off, new) in self.doc.normalize() {
+            if self.tip == seg {
+                self.tip = new;
+            }
+            if self.caret.seg == seg && self.caret.off > off {
+                self.caret = Pos { seg: new, off: self.caret.off - off - 1 };
+            }
+        }
+        self.show(self.tip);
+    }
     fn record(&mut self, before: Snapshot) {
+        self.normalize();
         if before.doc != self.doc {
             self.undo.push(before);
             self.redo.clear();
@@ -106,12 +199,13 @@ impl Session {
         }
     }
 
-    /// Moves the caret, changing the tip only if it is off the current path.
+    /// Moves the caret, changing the path only if it is off the current one.
     pub fn go_to(&mut self, pos: Pos) {
         if !self.doc.path(self.tip).contains(&pos.seg) {
-            self.tip = pos.seg;
+            self.show(pos.seg);
         }
         self.caret = pos;
+        self.inside = false;
         self.anchor = None;
     }
 
@@ -131,28 +225,37 @@ impl Session {
     pub fn anchor(&self) -> Pos {
         self.anchor.unwrap_or(self.caret)
     }
-    /// Shows a path ending at `tip`.
-    pub fn set_tip(&mut self, tip: SegId) {
-        self.tip = tip;
-        self.anchor = None;
-        if !self.doc.path(tip).contains(&self.caret.seg) {
-            self.caret = self.doc.end(tip);
-        }
-    }
-    /// Makes a segment the tip, with the caret at its end.
+    /// Moves the caret to the end of a segment.
     pub fn select(&mut self, seg: SegId) {
-        self.tip = seg;
-        self.anchor = None;
-        self.caret = self.doc.end(seg);
+        self.go_to(self.doc.end(seg));
     }
 
-    /// Switches the caret's segment to its next or previous sibling.
+    /// Switches branches at the fork beside the caret, or else the one before.
     pub fn cycle_sibling(&mut self, delta: isize) {
-        let sibs = self.doc.siblings(self.caret.seg);
-        let i = sibs.iter().position(|s| *s == self.caret.seg).expect("is own sibling");
+        let Pos { seg, off } = self.caret;
+        let text = &self.doc.get(seg).text;
+        let blank = |s: &str| s.trim().is_empty() && !s.contains('\n');
+        let has_parent = self.doc.get(seg).parent.is_some();
+        let path = self.doc.path(self.tip);
+        let i = path.iter().position(|s| *s == seg).expect("caret on path");
+        let before = !(has_parent && blank(&text[..off])) && blank(&text[off..]);
+        let (inside, caret) = (self.inside, self.caret);
+        let branch = match path.get(i + 1) {
+            Some(&next) if before => next,
+            _ => seg,
+        };
+        let sibs = self.doc.siblings(branch);
+        let i = sibs.iter().position(|s| *s == branch).expect("is own sibling");
         let j = (i as isize + delta).rem_euclid(sibs.len() as isize) as usize;
-        if i != j {
-            self.select(sibs[j]);
+        if i == j {
+            return;
+        }
+        let new = sibs[j];
+        self.go_to(Pos { seg: new, off: 0 });
+        if branch == seg {
+            self.inside = inside;
+        } else {
+            self.caret = caret;
         }
     }
 
@@ -165,6 +268,9 @@ impl Session {
         let text = &self.doc.get(seg).text;
         let (gap, partway) = notation::gap(text, self.caret.off);
         let at = |gap| Pos { seg, off: notation::gap_offset(text, gap) };
+        if self.inside && forward {
+            return self.caret;
+        }
         if forward {
             if gap < notation::parse(text).tokens.len() {
                 at(gap + 1)
@@ -207,55 +313,206 @@ impl Session {
         self.move_caret(pos, extend);
     }
 
-    /// Deletes the selection, or else one token. A fork counts as a token.
-    pub fn delete(&mut self, forward: bool) {
-        let (a, c) = (self.offset(self.anchor()), self.offset(self.caret));
-        let mut text = self.doc.path_text(self.tip);
-        let caret = if a != c {
-            text.replace_range(a.min(c)..a.max(c), "");
-            a.min(c)
-        } else {
-            let seg = &self.doc.get(self.caret.seg).text;
-            let Some((new, off)) = notation::delete(seg, self.caret.off, forward) else {
-                self.delete_fork(forward);
-                return;
-            };
-            let start = c - self.caret.off;
-            text.replace_range(start..start + seg.len(), &new);
-            start + off
-        };
-        self.edit_once(&text, caret);
-    }
-    fn delete_fork(&mut self, forward: bool) {
+    /// Moves the caret between the sides of a bubble and its active branch.
+    /// Returns whether there's a bubble there.
+    pub fn step_bubble(&mut self, forward: bool) -> bool {
+        let Pos { seg, off } = self.caret;
         let path = self.doc.path(self.tip);
-        let i = path.iter().position(|s| *s == self.caret.seg).expect("caret on path");
-        let seg = if forward { path.get(i + 1) } else { path.get(i) };
-        let Some(&seg) = seg else {
-            return;
-        };
-        let Some(parent) = self.doc.get(seg).parent else {
-            return;
-        };
+        let i = path.iter().position(|s| *s == seg).expect("caret on path");
+        if self.inside {
+            let pos = if forward { self.caret } else { self.doc.end(path[i - 1]) };
+            self.go_to(pos);
+        } else if !forward && off == 0 && i > 0 {
+            self.enter(seg);
+        } else if let Some(&next) = path.get(i + 1)
+            && forward
+            && self.caret == self.doc.end(seg)
+        {
+            self.enter(next);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// Deletes the selection, or else one token. A bubble counts as a token.
+    pub fn delete(&mut self, forward: bool) {
         let before = self.snapshot();
-        let text = &self.doc.get(parent).text;
-        let padding = notation::padding(text, &self.doc.get(seg).text);
-        self.doc.set_text(parent, format!("{text}{padding}"));
-        self.join_into_parent(seg);
+        let (a, c) = (self.offset(self.anchor()), self.offset(self.caret));
+        let Pos { seg, off } = self.caret;
+        if a != c {
+            self.remove(a.min(c), a.max(c));
+        } else if self.inside {
+            if !forward {
+                let c = self.caret_offset();
+                self.remove(c - 1, c);
+            }
+        } else if let Some((new, off)) = notation::delete(&self.doc.get(seg).text, off, forward) {
+            self.doc.set_text(seg, new);
+            self.caret.off = off;
+        } else {
+            let path = self.doc.path(self.tip);
+            let i = path.iter().position(|s| *s == seg).expect("caret on path");
+            let bubble = if forward { path.get(i + 1).copied() } else { Some(seg) };
+            if let Some(seg) = bubble
+                && let Some(parent) = self.doc.get(seg).parent
+            {
+                let text = &self.doc.get(parent).text;
+                let padding = notation::padding(text, &self.doc.get(seg).text);
+                self.doc.set_text(parent, format!("{text}{padding}"));
+                self.join_into_parent(seg);
+            }
+        }
         self.record(before);
     }
 
-    /// Offset in the path's text.
+    // ---- the text box's text ----
+
+    fn spans(&self) -> Vec<Span> {
+        let mut at = 0;
+        let path = self.doc.path(self.tip);
+        let span = |&seg: &SegId| {
+            let s = self.doc.get(seg);
+            let bubble = at;
+            if s.parent.is_some() {
+                at += self.doc.siblings(seg).len() + 1;
+            }
+            let start = at;
+            at += s.text.len();
+            Span { seg, bubble, start, end: at }
+        };
+        path.iter().map(span).collect()
+    }
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        for s in self.spans() {
+            if s.start > s.bubble {
+                out.extend(std::iter::repeat_n(MARK, s.start - s.bubble - 1));
+                out.push(END);
+            }
+            out.push_str(&self.doc.get(s.seg).text);
+        }
+        out
+    }
+    /// Offset in the text, if it's on the path.
+    pub fn offset_of(&self, pos: Pos) -> Option<usize> {
+        self.spans().iter().find(|s| s.seg == pos.seg).map(|s| s.start + pos.off)
+    }
     fn offset(&self, pos: Pos) -> usize {
-        self.doc.path_offset(self.tip, pos).expect("on path")
+        self.offset_of(pos).expect("on path")
+    }
+    pub fn caret_offset(&self) -> usize {
+        if !self.inside {
+            return self.offset(self.caret);
+        }
+        let sibs = self.doc.siblings(self.caret.seg);
+        let i = sibs.iter().position(|s| *s == self.caret.seg).expect("is own sibling");
+        self.offset(self.caret) - (sibs.len() - i)
+    }
+    /// The position at an offset in the text, and whether it's inside a bubble.
+    pub fn at_offset(&self, off: usize) -> (Pos, bool) {
+        for s in self.spans() {
+            if off < s.start {
+                let sibs = self.doc.siblings(s.seg);
+                return (Pos { seg: sibs[off - s.bubble - 1], off: 0 }, true);
+            }
+            if off <= s.end {
+                return (Pos { seg: s.seg, off: off - s.start }, false);
+            }
+        }
+        (self.doc.end(self.tip), false)
+    }
+    /// Each bubble's extent in the text, and its active branch.
+    pub fn bubbles(&self) -> Vec<(std::ops::Range<usize>, SegId)> {
+        self.spans()[1..].iter().map(|s| (s.bubble..s.start, s.seg)).collect()
+    }
+
+    /// Deletes a range of the text.
+    fn remove(&mut self, mut a: usize, mut b: usize) {
+        let was_inside = self.inside;
+        let outside_left = !was_inside && self.caret_offset() == a;
+        for (r, seg) in self.bubbles() {
+            let touches = a < r.end && r.start < b;
+            if !touches || (a <= r.start && r.end <= b) {
+                continue;
+            }
+            let within = r.start <= a && b <= r.end;
+            // Backspace after the bubble, or Delete before it, deletes it all.
+            let whole = !within || (!was_inside && (b == r.end || outside_left));
+            if !whole {
+                let sibs = self.doc.siblings(seg).to_vec();
+                let range = a - r.start..(b - r.start).min(sibs.len());
+                if range.is_empty() {
+                    return;
+                }
+                if range.len() < sibs.len() {
+                    for s in &sibs[range.clone()] {
+                        self.doc.delete(*s);
+                    }
+                    let left = range.start.checked_sub(1).unwrap_or(range.end);
+                    self.show(sibs[left]);
+                    self.enter(sibs[left]);
+                    return;
+                }
+            }
+            (a, b) = (a.min(r.start), b.max(r.end));
+        }
+        let spans = self.spans();
+        let h = spans.iter().position(|s| a <= s.end).expect("in bounds");
+        let t = spans.iter().rposition(|s| s.start <= b).expect("in bounds");
+        let mut text = self.doc.get(spans[h].seg).text[..a - spans[h].start].to_owned();
+        let off = text.len();
+        text.push_str(&self.doc.get(spans[t].seg).text[b - spans[t].start..]);
+        for s in &spans[h + 1..=t] {
+            self.doc.join(s.seg);
+        }
+        let seg = spans[h].seg;
+        self.doc.set_text(seg, text);
+        if t + 1 == spans.len() {
+            self.tip = seg;
+        }
+        self.caret = Pos { seg, off };
+        self.inside = false;
+    }
+    /// Types text at the caret. A `>` outside of a comment makes a bubble, or
+    /// inside of a bubble, another branch.
+    fn insert(&mut self, text: &str) {
+        for c in text.chars() {
+            let Pos { seg, off } = self.caret;
+            let before = &self.doc.get(seg).text[..off];
+            let new = if c != '>' {
+                None
+            } else if self.inside {
+                self.doc.add_sibling(seg)
+            } else if notation::parse(before).in_comment {
+                None
+            } else {
+                Some(self.doc.split_at(self.caret))
+            };
+            if let Some(new) = new {
+                if self.tip == seg || self.inside {
+                    self.tip = new;
+                }
+                self.caret = Pos { seg: new, off: 0 };
+                self.inside = true;
+            } else {
+                let mut text = self.doc.get(seg).text.clone();
+                text.insert(off, c);
+                self.doc.set_text(seg, text);
+                self.caret.off += c.len_utf8();
+                self.inside = false;
+            }
+        }
     }
 
     pub fn twist(&mut self, mv: &str, inversion: Inversion) {
-        let old = &self.doc.get(self.caret.seg).text;
-        let (new, off) = notation::twist(old, self.caret.off, mv, inversion);
-        let start = self.offset(self.caret) - self.caret.off;
-        let mut text = self.doc.path_text(self.tip);
-        text.replace_range(start..start + old.len(), &new);
-        self.edit_once(&text, start + off);
+        let before = self.snapshot();
+        let text = &self.doc.get(self.caret.seg).text;
+        let (text, off) = notation::twist(text, self.caret.off, mv, inversion);
+        self.doc.set_text(self.caret.seg, text);
+        self.caret.off = off;
+        self.inside = false;
+        self.record(before);
     }
 
     /// Like `edit`, but always its own undo step.
@@ -264,7 +521,7 @@ impl Session {
         self.edit(new, caret);
         self.typing = None;
     }
-    /// Applies an edit made in the path's text box.
+    /// Applies an edit made in the text box, where `caret` is its caret after.
     pub fn edit(&mut self, new: &str, caret: usize) {
         self.anchor = None;
         let before = self.snapshot();
@@ -272,7 +529,31 @@ impl Session {
         let coalesce = self.typing.is_some_and(|(pos, t)| {
             pos == self.caret && now - t < Duration::from_secs(1)
         });
-        (self.tip, self.caret) = self.doc.edit_path(self.tip, new, caret);
+
+        // The edit ends at the caret, which disambiguates the diff.
+        let old = self.text();
+        let tail = &new[caret..];
+        let suffix = if old.ends_with(tail) {
+            tail.len()
+        } else {
+            let pairs = old.chars().rev().zip(new.chars().rev());
+            pairs.take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum()
+        };
+        let (old_head, new_head) = (&old[..old.len() - suffix], &new[..new.len() - suffix]);
+        let pairs = old_head.chars().zip(new_head.chars());
+        let prefix: usize = pairs.take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum();
+        if prefix < old_head.len() {
+            self.remove(prefix, old_head.len());
+            self.show(self.tip);
+        } else {
+            (self.caret, self.inside) = self.at_offset(prefix);
+            if self.inside {
+                self.show(self.caret.seg);
+            }
+        }
+        self.insert(&new_head[prefix..].replace(['\r', MARK, END], ""));
+        self.normalize();
+
         if before.doc == self.doc {
             return;
         }
@@ -286,20 +567,25 @@ impl Session {
     pub fn split(&mut self) {
         let before = self.snapshot();
         let old = self.caret.seg;
-        let (new, last) = self.doc.split(self.caret);
+        let new = self.doc.split(self.caret);
         if self.tip == old {
-            self.tip = last;
+            self.tip = new;
         }
         self.caret = Pos { seg: new, off: 0 };
+        self.inside = false;
         self.record(before);
     }
     pub fn fork(&mut self) {
         let before = self.snapshot();
-        self.caret = self.doc.fork(self.caret);
-        self.tip = self.caret.seg;
+        if self.inside {
+            self.insert(">");
+        } else {
+            let pos = self.doc.fork(self.caret);
+            self.go_to(pos);
+        }
         self.record(before);
     }
-    /// Joins the caret's segment to its parent.
+    /// Joins the caret's segment to its parent, deleting the bubble between.
     pub fn join(&mut self) {
         let before = self.snapshot();
         self.join_into_parent(self.caret.seg);
@@ -309,6 +595,7 @@ impl Session {
         if let Some(start) = self.doc.join(seg) {
             if self.caret.seg == seg {
                 self.caret = Pos { seg: start.seg, off: start.off + self.caret.off };
+                self.inside = false;
             }
             if self.tip == seg {
                 self.tip = start.seg;
@@ -319,6 +606,7 @@ impl Session {
     pub fn delete_branch(&mut self) {
         let before = self.snapshot();
         if let Some(parent) = self.doc.delete(self.caret.seg) {
+            self.show(parent);
             self.select(parent);
         }
         self.record(before);
@@ -327,6 +615,7 @@ impl Session {
         let before = self.snapshot();
         let new = Self::new(doc);
         (self.doc, self.tip, self.caret) = (new.doc, new.tip, new.caret);
+        self.inside = false;
         self.record(before);
     }
 }

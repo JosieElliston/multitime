@@ -508,10 +508,8 @@ pub fn cut(text: &str, caret: usize) -> Cut {
     let mut p = parse(&text[..at]);
     let mut comment_nl = "";
     if p.in_comment {
-        match text[at..].find('\n') {
-            Some(n) => at += n + 1,
-            None => (at, comment_nl) = (text.len(), "\n"),
-        }
+        at = text[at..].find('\n').map_or(text.len(), |n| at + n);
+        comment_nl = "\n";
         p = parse(&text[..at]);
     }
     let full = parse(text);
@@ -575,10 +573,11 @@ pub fn cut(text: &str, caret: usize) -> Cut {
             .join("\n");
     }
 
-    let mut left = format!("{}{comment_nl}", &text[..cut_at]);
+    let mut left = text[..cut_at].to_owned();
     let mut right = text[cut_at..].to_owned();
     let niss = p.inversion() == Inversion::Inverse;
     if reopen {
+        left.push_str(comment_nl);
         left.push(')');
         if let Some(l) = left.strip_suffix("^()") {
             left = l.to_owned();

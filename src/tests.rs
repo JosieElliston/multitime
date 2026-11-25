@@ -1,7 +1,7 @@
 use crate::doc::{Doc, Pos};
 use crate::notation::{Inversion::*, *};
 use crate::puzzle::Perm;
-use crate::session::Session;
+use crate::session::{END, MARK, Session, to_clipboard};
 
 struct Rng(u64);
 impl Rng {
@@ -142,121 +142,192 @@ fn fork_examples() {
     assert_eq!(s.doc().to_file(), "^(A B)\n");
 }
 
+/// Edits like an editor would: replace a range of the text.
+fn replace(s: &mut Session, r: std::ops::Range<usize>, with: &str) {
+    let mut t = s.text();
+    t.replace_range(r.clone(), with);
+    s.edit(&t, r.start + with.len());
+    s.doc().check();
+}
+fn typ(s: &mut Session, text: &str) {
+    for c in text.chars() {
+        let at = s.caret_offset();
+        replace(s, at..at, &c.to_string());
+    }
+}
+fn backspace(s: &mut Session) {
+    let at = s.caret_offset();
+    replace(s, at - 1..at, "");
+}
+/// The text, with `^` before each active mark, and the caret.
+fn show(s: &Session) -> String {
+    let mut out = String::new();
+    let bubbles = s.bubbles();
+    for (i, c) in s.text().char_indices() {
+        if i == s.caret_offset() {
+            out.push('|');
+        }
+        if let Some((r, seg)) = bubbles.iter().find(|b| b.0.contains(&i)) {
+            if i == r.start {
+                out.push('[');
+            }
+            let sibs = s.doc().siblings(*seg);
+            if sibs.get(i - r.start) == Some(seg) {
+                out.push('^');
+            }
+        }
+        out.push(match c {
+            MARK => '>',
+            END => ']',
+            c => c,
+        });
+    }
+    if s.caret_offset() == s.text().len() {
+        out.push('|');
+    }
+    out
+}
+
 #[test]
-fn forking_beside_a_fork() {
-    // Right beside it, on either side, adds a branch to it.
-    for (text, at) in [("R>U", 1), ("R>U", 2), ("R >U", 1), ("R> U", 3), ("R>", 2), ("R>", 1)] {
+fn bubbles() {
+    let mut s = Session::new(Doc::new("R U"));
+    s.go_to(Pos { seg: s.doc().root(), off: 1 });
+    typ(&mut s, ">");
+    assert_eq!(show(&s), "R[^>|] U");
+    typ(&mut s, ">");
+    assert_eq!(show(&s), "R[>^>|]");
+    // Typing continues after the bubble.
+    typ(&mut s, "F>D");
+    assert_eq!(show(&s), "R[>^>]F[^>]D|");
+    assert_eq!(s.doc().to_file(), "R\n>\n   U\n>\n  F\n  >\n    D\n");
+    let full = s.clone();
+
+    // Going through it makes the branch that it's after active, and remembers
+    // the active branch of each.
+    let at = |s: &Session, off| s.at_offset(off).0.seg;
+    let seg = at(&s, 2);
+    s.enter(seg);
+    assert_eq!(show(&s), "R[^>|>] U");
+    s.cycle_sibling(1);
+    assert_eq!(show(&s), "R[>^>|]F[^>]D");
+    // Out of it, and in again.
+    assert!(s.step_bubble(true) && !s.step_bubble(true));
+    assert_eq!(show(&s), "R[>^>]|F[^>]D");
+    assert!(s.step_bubble(false) && s.step_bubble(false) && !s.step_bubble(false));
+    assert_eq!(show(&s), "R|[>^>]F[^>]D");
+    s.cycle_sibling(1);
+    assert_eq!(show(&s), "R|[^>>] U");
+
+    // Backspace in it deletes a branch.
+    let mut s = full.clone();
+    let seg = at(&s, 3);
+    s.enter(seg);
+    backspace(&mut s);
+    assert_eq!(show(&s), "R[^>|] U");
+    backspace(&mut s);
+    assert_eq!(show(&s), "R| U");
+    s.undo(); // coalesced
+    // Delete, in and at the end of it.
+    s.enter(at(&s, 2));
+    let o = s.caret_offset();
+    replace(&mut s, o..o + 1, "");
+    assert_eq!(show(&s), "R[^>|] U");
+    replace(&mut s, o..o + 1, "");
+    assert_eq!(show(&s), "R[^>|] U");
+    // After or before it, all but the active branch.
+    for (off, r) in [(4, 3..4), (1, 1..2)] {
+        let mut s = full.clone();
+        s.go_to(s.at_offset(off).0);
+        replace(&mut s, r, "");
+        assert_eq!(show(&s), "R|F[^>]D");
+        s.undo();
+        assert_eq!(s.doc(), full.doc());
+    }
+    // Everything.
+    let mut s = full.clone();
+    let n = s.text().len();
+    replace(&mut s, 0..n, "");
+    assert_eq!(s.doc().to_file(), "\n");
+    // Forking in it.
+    let mut s = full.clone();
+    s.enter(at(&s, 2));
+    s.fork();
+    assert_eq!(show(&s), "R[>^>|>]");
+    // By tokens, joining keeps them separate.
+    let mut s = Session::new(Doc::new("R>U"));
+    s.go_to(s.at_offset(3).0);
+    s.delete(false);
+    assert_eq!(s.doc().to_file(), "R U\n");
+}
+
+#[test]
+fn forking_beside_a_bubble() {
+    for (text, at) in [("R>U", 1), ("R>U", 3), ("R >U", 1), ("R> U", 4), ("R>", 3), ("R>", 1)] {
         let mut s = Session::new(Doc::new(text));
-        s.go_to(s.doc().path_pos(s.tip(), at));
+        s.go_to(s.at_offset(at).0);
         s.fork();
         assert_eq!(s.doc().get(s.doc().root()).children.len(), 2, "{text:?} at {at}");
         assert_eq!(s.doc().ids().count(), 3, "{text:?} at {at}");
     }
     // But not from another line.
-    for (text, at, want) in [("R\n>U", 1, "R>\n>U"), ("R>\nU", 3, "R>\n>U"), ("R>\n", 3, "R>\n>")] {
+    for (text, at, want) in [("R\n>U", 1, "R[>^>]|"), ("R>\nU", 4, "R[^>]\n[>^>]|")] {
         let mut s = Session::new(Doc::new(text));
-        s.go_to(s.doc().path_pos(s.tip(), at));
+        s.go_to(s.at_offset(at).0);
         s.fork();
-        s.cycle_sibling(-1);
-        let mut tip = s.tip();
-        while let Some(c) = s.doc().get(tip).children.first() {
-            tip = *c;
-        }
-        assert_eq!(s.doc().path_text(tip), want);
-        assert_eq!(s.doc().get(s.doc().root()).children.len(), if at == 1 { 2 } else { 1 });
+        assert_eq!(show(&s), want);
     }
 }
 
-/// Edits like an editor would: replace a range of the path text.
-fn replace(s: &mut Session, r: std::ops::Range<usize>, with: &str) {
-    let mut t = s.doc().path_text(s.tip());
-    t.replace_range(r.clone(), with);
-    s.edit(&t, r.start + with.len());
-    s.doc().check();
-}
-
 #[test]
-fn editing_forks() {
-    let mut s = Session::new(Doc::new("R U"));
-    replace(&mut s, 1..1, ">");
-    assert_eq!(s.doc().to_file(), "R\n>\n   U\n");
-    assert_eq!(s.eval(s.caret()).0, st("R"));
-    replace(&mut s, 1..2, "");
-    assert_eq!(s.doc().to_file(), "R U\n");
-    // Its children join its siblings, in its place.
-    let file = "R\n>\n  A\n>\n  U\n  >\n    F\n  >\n    D\n>\n  B\n";
-    let mut s = Session::new(Doc::from_file(file).unwrap());
-    let u = s.doc().ids().find(|id| s.doc().get(*id).text == "U").unwrap();
-    s.select(u);
-    replace(&mut s, 1..2, "");
-    assert_eq!(s.doc().to_file(), "RU\n>\n  A\n>\n  F\n>\n  D\n>\n  B\n");
-    assert_eq!(s.caret().off, 1);
-    s.undo();
-    assert_eq!(s.doc().to_file(), file);
-    // By tokens, it keeps them separate.
-    for (seg, off, forward) in [(u, 0, false), (s.doc().root(), 1, true)] {
-        let mut s = s.clone();
-        s.go_to(Pos { seg, off });
-        s.delete(forward);
-        assert!(s.doc().to_file().starts_with("R U\n>\n  A\n>\n  F\n"));
-    }
-    // Empty segments.
-    let mut s = Session::new(Doc::new("R"));
-    replace(&mut s, 1..1, ">>\nF");
-    assert_eq!(s.doc().path(s.tip()).len(), 3);
-    assert_eq!(s.doc().path_text(s.tip()), "R>>\nF");
-}
-
-#[test]
-fn forks_in_comments() {
-    let mut s = Session::new(Doc::new("R // a > b\nU>F"));
-    assert_eq!(s.doc().path(s.tip()).len(), 2);
-    // Commenting out a fork, and uncommenting it.
-    replace(&mut s, 12..12, "//");
-    assert_eq!(s.doc().path(s.tip()).len(), 1);
-    replace(&mut s, 12..14, "");
-    assert_eq!(s.doc().path(s.tip()).len(), 2);
-    replace(&mut s, 2..4, "");
-    assert_eq!(s.doc().path_text(s.tip()), "R  a > b\nU>F");
-    assert_eq!(s.doc().path(s.tip()).len(), 3);
-    // It can comment out several.
-    let mut s = Session::new(Doc::new("R>U>F\n>D"));
-    replace(&mut s, 1..1, "//");
-    assert_eq!(s.doc().path_text(s.tip()), "R//>U>F\n>D");
-    assert_eq!(s.doc().path(s.tip()).len(), 2);
-    // Forking from a comment goes after it.
-    let mut s = Session::new(Doc::new("R // hi"));
+fn bubbles_and_comments() {
+    let mut s = Session::new(Doc::new("// a > b"));
+    assert_eq!(show(&s), "// a > b|");
+    typ(&mut s, ">");
+    assert_eq!(show(&s), "// a > b>|");
+    // A comment can end at a bubble.
     s.fork();
-    s.doc().check();
-    assert_eq!(s.doc().path_text(s.tip()), "R // hi\n>");
-    // Which isn't an extra line in a file.
-    let file = "R // hi\n>\n\n";
-    assert_eq!(s.doc().to_file(), file);
-    assert_eq!(Doc::from_file(file).unwrap(), *s.doc());
-    for text in ["R // hi\n\n", "R\n", "// a\n\n\n"] {
-        let mut s = Session::new(Doc::new(text));
-        s.fork();
-        assert_eq!(Doc::from_file(&s.doc().to_file()).unwrap(), *s.doc());
-    }
+    typ(&mut s, "R");
+    assert_eq!(show(&s), "// a > b>[^>]R|");
+    // Uncommenting a `>` makes a bubble.
+    replace(&mut s, 0..2, "");
+    assert_eq!(show(&s), "| a [^>] b[^>][^>]R");
+    assert_eq!(to_clipboard(&s.text()), " a > b> >R");
+    // Forking in a comment goes after it.
+    let mut s = Session::new(Doc::new("R // hi\nU"));
+    s.go_to(Pos { seg: s.doc().root(), off: 6 });
+    s.fork();
+    assert_eq!(s.doc().to_file(), "R // hi\n>\n\n  U\n>\n\n");
+    assert_eq!(Doc::from_file(&s.doc().to_file()).unwrap(), *s.doc());
 }
 
 #[test]
-fn cut_and_paste_forks() {
-    // Any stretch of a path without other branches.
-    let file = "R U\n>\n  F B\n  >\n    D L\n";
-    let s = Session::new(Doc::from_file(file).unwrap());
-    let text = s.doc().path_text(s.tip());
-    for (a, b, cut) in [(1, 5, "R B\n>\n  D L\n"), (1, 9, "R L\n"), (0, text.len(), "\n")] {
-        let mut s = s.clone();
-        replace(&mut s, a..b, "");
-        assert_eq!(s.doc().to_file(), cut);
-        replace(&mut s, a..a, &text[a..b]);
-        assert_eq!(s.doc().to_file(), file);
+fn cut_and_paste_bubbles() {
+    let s = Session::new(Doc::from_file("R U\n>\n  F B\n  >\n\n    >\n      D L\n").unwrap());
+    let n = s.text().len();
+    for a in 0..n {
+        for b in a..=n {
+            let (inside_a, inside_b) = (s.at_offset(a).1, s.at_offset(b).1);
+            if inside_a || inside_b {
+                continue;
+            }
+            let mut s = s.clone();
+            let (file, clip) = (s.doc().to_file(), to_clipboard(&s.text()[a..b]));
+            replace(&mut s, a..b, "");
+            let at = s.caret_offset();
+            replace(&mut s, at..at, &clip);
+            assert!(s.text().matches(MARK).count() == 3, "{clip:?}: {}", s.doc().to_file());
+            if !clip.contains("> >") {
+                assert_eq!(s.doc().to_file(), file, "{clip:?}");
+            }
+        }
     }
-    // A pasted fork splits: the branches now come after it.
-    let mut s = Session::new(Doc::from_file("R\n>\n  F\n>\n  D\n").unwrap());
-    replace(&mut s, 1..1, ">X");
-    assert_eq!(s.doc().to_file(), "R\n>\n  X\n  >\n    F\n  >\n    D\n");
+    // Only the active branch is copied.
+    let s = Session::new(Doc::from_file("R // hi\n>\n  F\n>\n  D\n").unwrap());
+    assert_eq!(to_clipboard(&s.text()), "R // hi\n>F");
+    // The text after a pasted bubble becomes its branch.
+    let mut s = Session::new(Doc::new("A B"));
+    replace(&mut s, 1..1, "X>Y");
+    assert_eq!(show(&s), "AX[^>]Y| B");
 }
 
 #[test]
@@ -272,22 +343,38 @@ fn random_editing() {
     for _ in 0..3000 {
         let mut s = Session::new(Doc::default());
         for _ in 0..30 {
-            let text = s.doc().path_text(s.tip());
-            match rng.below(10) {
+            let text = s.text();
+            match rng.below(11) {
                 0..4 => {
                     let (a, b) = (rng.off(&text), rng.off(&text));
                     let (a, b) = (a.min(b), if rng.below(2) == 0 { a.min(b) } else { a.max(b) });
+                    if rng.below(2) == 0 {
+                        let (pos, inside) = s.at_offset(a);
+                        if inside { s.enter(pos.seg) } else { s.go_to(pos) }
+                    }
+                    let text = s.text();
+                    let (a, b) = (a.min(text.len()), b.min(text.len()));
+                    if !text.is_char_boundary(a) || !text.is_char_boundary(b) {
+                        continue;
+                    }
                     let mut ins = rng.text(4);
                     if rng.below(3) == 0 {
-                        ins.push_str([">", "\n>\n", "//"][rng.below(3)]);
+                        ins.push_str([">", "\n>\n", "//", ">>"][rng.below(4)]);
                     }
                     let mut want = text.clone();
                     want.replace_range(a..b, &ins);
                     replace(&mut s, a..b, &ins);
-                    // Edits are literal, except for ending a comment.
-                    let got = s.doc().path_text(s.tip());
-                    assert_eq!(got.strip_suffix('\n').filter(|t| *t == want).unwrap_or(&got), want);
-                    assert_eq!(s.doc().path_offset(s.tip(), s.caret()), Some(a + ins.len()));
+                    // Away from bubbles, edits are literal.
+                    if !text[a..b].contains([MARK, END]) && !want.contains('>') && !s.text().contains('>')
+                        && (a == 0 || !text[..a].ends_with(MARK))
+                    {
+                        assert_eq!(s.text(), want);
+                        assert_eq!(s.caret_offset(), a + ins.len());
+                    }
+                }
+                10 => {
+                    s.step_bubble(rng.below(2) == 0);
+                    s.cycle_sibling(1);
                 }
                 4 => s.split(),
                 5 => s.fork(),
@@ -305,12 +392,10 @@ fn random_editing() {
             s.doc().check();
             assert!(s.doc().path(s.tip()).contains(&s.caret().seg));
             s.eval(s.caret());
-            let d = s.doc().path_offset(s.tip(), s.caret()).unwrap();
-            assert_eq!(s.doc().path_pos(s.tip(), d), s.caret());
+            assert!(s.doc().get(s.tip()).children.is_empty());
+            assert_eq!(s.at_offset(s.caret_offset()), (s.caret(), s.inside()));
             let file = s.doc().to_file();
             assert_eq!(Doc::from_file(&file).unwrap().to_file(), file);
-            let reread = Session::new(Doc::new(&text));
-            assert_eq!(reread.doc().path_text(reread.tip()), text);
         }
         let end = s.doc().to_file();
         for _ in 0..40 {

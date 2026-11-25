@@ -76,11 +76,13 @@ fn typing_and_forks() {
     click(&mut h, pos2(100.0, 45.0), PointerButton::Primary);
     typ(&mut h, "R U>F");
     assert_eq!(file(&h), "R U\n>\n  F\n");
-    // Arrow keys cross the fork both ways.
-    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
-    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    // Arrow keys go through the bubble both ways.
+    for _ in 0..3 {
+        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    }
     typ(&mut h, "2");
     assert_eq!(file(&h), "R U2\n>\n  F\n");
+    key(&mut h, Modifiers::NONE, Key::ArrowRight);
     key(&mut h, Modifiers::NONE, Key::ArrowRight);
     typ(&mut h, "x ");
     assert_eq!(file(&h), "R U2\n>\n  x F\n");
@@ -224,22 +226,16 @@ fn selecting_across_forks() {
     h.run_steps(2);
     key(&mut h, Modifiers::NONE, Key::Backspace);
     let f = file(&h);
-    assert!(f == "R U B\n>\n  L\n", "{f:?}");
+    assert_eq!(f, "R U B\n"); // the other branch was in the bubble
 }
 
 #[test]
 fn text_box_fills_panel() {
     let mut h = harness("R U\n>\n  F\n>\n  D\n");
-    let root = h.state().session.doc().root();
-    h.state_mut().session.select(root);
-    h.run_steps(3);
     shot(&mut h, "fill");
     click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
     typ(&mut h, "x");
-    assert_eq!(file(&h), "R Ux\n>\n  F\n>\n  D\n");
-    // The children are inside of the box, but are still clickable.
-    click(&mut h, pos2(51.0, 75.0), PointerButton::Primary);
-    assert_eq!(h.state().session.doc().get(h.state().session.tip()).text, "D");
+    assert_eq!(file(&h), "R U\n>\n  Fx\n>\n  D\n");
 
     let mut h = harness(&"R\n".repeat(100));
     shot(&mut h, "scrolled");
@@ -427,18 +423,15 @@ fn typing_a_fork() {
         }
         h
     };
-    // At the end of a segment, the branches come after it.
+    // In a bubble, it's a new branch.
     let mut h = start("R U\n>\n  F\n>\n  D\n");
     typ(&mut h, ">x");
-    assert_eq!(file(&h), "R U\n>\n  x\n  >\n    F\n  >\n    D\n");
-    // Ordinary text in a comment. Line breaks around it are kept.
-    let mut h = start("R U\n>\n  F\n>\n  D\n");
-    typ(&mut h, "\n\n");
-    for _ in 0..2 {
-        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
-    }
+    assert_eq!(file(&h), "R U\n>\n  F\n>\n  D\n>\n  x\n");
+    // Ordinary text in a comment, which can end at a bubble.
+    let mut h = start("R U\n>\n  F\n");
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     typ(&mut h, " // >");
-    assert_eq!(file(&h), "R U // >\n\n\n>\n  F\n>\n  D\n");
+    assert_eq!(file(&h), "R U // >\n>\n  F\n");
     // In the middle of one.
     let mut h = start("R U\n");
     typ(&mut h, ">");
@@ -504,30 +497,71 @@ fn hovering_text() {
 }
 
 #[test]
-fn forks_are_characters() {
-    let mut h = harness("R U F\n>\n  D B L\n>\n  L\n");
+fn bubbles() {
+    let mut h = harness("R U F\n>\n  D B L\n>\n  L U\n");
     let caret = |h: &Harness<'_, App>| {
         let s = &h.state().session;
-        (s.doc().get(s.caret().seg).text.clone(), s.caret().off)
+        (s.doc().get(s.caret().seg).text.clone(), s.caret().off, s.inside())
     };
+    let at = |text: &str, off, inside| (text.to_owned(), off, inside);
     click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
-    assert_eq!(caret(&h), ("D B L".to_owned(), 5));
-    for _ in 0..5 {
-        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("D B L", 5, false));
+    // By words, it stops at each side, and keeps the branch.
+    for want in [4, 2, 0] {
+        key(&mut h, Modifiers::ALT, Key::ArrowLeft);
+        assert_eq!(caret(&h), at("D B L", want, false));
     }
-    assert_eq!(caret(&h), ("D B L".to_owned(), 0));
+    key(&mut h, Modifiers::ALT, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("D B L", 0, true));
+    shot(&mut h, "inside");
+    key(&mut h, Modifiers::ALT, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("R U F", 5, false));
+    for inside in [true, false] {
+        key(&mut h, Modifiers::ALT, Key::ArrowRight);
+        assert_eq!(caret(&h), at("D B L", 0, inside));
+    }
+    // By characters, each branch is active as it goes by.
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
-    assert_eq!(caret(&h), ("R U F".to_owned(), 5));
-    key(&mut h, Modifiers::SHIFT, Key::ArrowRight);
-    assert_eq!(copied(&mut h), ">");
+    assert_eq!(caret(&h), at("L U", 0, true));
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("D B L", 0, true));
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("R U F", 5, false));
+    for text in ["D B L", "L U"] {
+        key(&mut h, Modifiers::NONE, Key::ArrowRight);
+        assert_eq!(caret(&h), at(text, 0, true));
+    }
+    key(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(caret(&h), at("L U", 0, false));
+    // Selecting goes over it, and copies only the active branch.
+    key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("R U F", 5, false));
     shot(&mut h, "inline");
-    // Its siblings are beside it.
-    click(&mut h, pos2(96.0, 50.0), PointerButton::Primary);
-    assert_eq!(caret(&h), ("L".to_owned(), 1));
-    // Backspace merges it.
-    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(copied(&mut h), ">");
+    // Clicking a mark.
+    click(&mut h, pos2(75.0, 50.0), PointerButton::Primary);
+    assert_eq!(caret(&h), at("D B L", 0, true));
     key(&mut h, Modifiers::NONE, Key::Backspace);
-    assert_eq!(file(&h), "R U FL\n>\n  D B L\n");
+    assert_eq!(file(&h), "R U F\n>\n  L U\n");
+    key(&mut h, Modifiers::NONE, Key::ArrowRight);
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "R U FL U\n");
+    key(&mut h, Modifiers::COMMAND, Key::A);
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "\n");
+    typ(&mut h, "R>>F");
+    assert_eq!(file(&h), "R\n>\n\n>\n  F\n");
+}
+
+#[test]
+fn up_and_down_skip_bubbles() {
+    let mut h = harness("R U F D\n>\n  \n  B\n>\n  L\n");
+    click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
+    let tip = h.state().session.tip();
+    for k in [Key::ArrowUp, Key::ArrowDown, Key::ArrowUp, Key::ArrowDown] {
+        key(&mut h, Modifiers::NONE, k);
+        assert!(h.state().session.tip() == tip && !h.state().session.inside());
+    }
 }
 
 #[test]

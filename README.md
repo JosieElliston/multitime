@@ -12,11 +12,15 @@ cargo run [file]  # default: solve.txt
 
 ### forks
 
-A `>` is where the text can continue in several ways. The text box shows all of a fork's branches as a row of `>`s in a box, with the current one highlighted; they're a single character. Click another to switch to it.
+A bubble is where the text can continue in several ways. It has a `>` for each branch. The active one is highlighted, and its text is shown after the bubble.
 
-Press Cmd+Enter to fork at the caret, or after the comment that it's in. If there's text after it, that becomes the other branch. Right before or after a `>` on the same line, it adds a branch to that one instead.
+The caret can go into a bubble. Whichever `>` it's right after becomes active. Alt+Left and Alt+Right go into and out of a bubble without changing the active branch, as do Up and Down past one.
 
-In the text box, a `>` is plain text. It splits the segment there: the text after it, and any branches, become a single branch. That's the same whether it's typed or pasted. In a comment, it does nothing, so commenting one out is like deleting it. Delete a `>` to merge its branch into what came before; any other branches then continue from the end of the merged text.
+Type a `>` to split the text with a bubble, which puts the caret in it. In a bubble, `>` adds an empty branch, so `>>` is a new branch beside the text that was there. Anything else goes after the bubble. Pasting is the same as typing. In a comment, a `>` is just text. A comment ends at a bubble.
+
+Or press Cmd+Enter to fork at the caret, or after the comment that it's in. If there's text after it, that becomes the other branch. Right before or after a bubble on the same line, it adds a branch to that one instead.
+
+In a bubble, Backspace deletes a `>` along with its branch, though the only `>` just merges its text into what came before. Right after a bubble, Backspace deletes the bubble: the active branch's text stays, and the other branches are deleted. Deleting a selection does the same to each bubble in it. Copying a bubble copies just the active `>`.
 
 ### text mode and twist mode
 
@@ -30,7 +34,7 @@ Esc cycles between text mode, twist mode on the first puzzle, and twist mode on 
 | Backspace, Delete | delete a character | delete a token (a bracket deletes its whole group) |
 | Home, End | go to the ends of the line | go to the ends of the path |
 
-In twist mode, a `>` counts as a token. Hold Shift with Left, Right, Home, or End to select.
+In twist mode, a bubble counts as a token. Up and Down switch branches at the bubble that the caret is beside, or else the one before it. Hold Shift with Left, Right, Home, or End to select.
 
 These work in both modes:
 
@@ -40,7 +44,7 @@ These work in both modes:
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | select all, copy, cut, paste |
 | Cmd+Enter | fork |
 | Cmd+D | split the segment at the caret, without adding a branch |
-| Cmd+J | merge this segment into its parent |
+| Cmd+J | delete the bubble before the caret, keeping the active branch |
 | Cmd+[, Cmd+] | switch branches |
 | Cmd+S | save |
 
@@ -51,7 +55,6 @@ These work in both modes:
 | Puzzle | right-click, left-click a sticker | turn its face clockwise, counterclockwise |
 | Puzzle | drag anywhere in the view | rotate the view like HSC |
 | Timeline | click | move the caret |
-| Timeline | double-click | move the caret, and end the text box's path at that segment |
 | Timeline | drag, or Shift+click | select along a path |
 
 ### twist keys
