@@ -49,7 +49,7 @@ These work in both modes:
 | Where | Action | Result |
 | --- | --- | --- |
 | Puzzle | right-click, left-click a sticker | turn its face clockwise, counterclockwise |
-| Puzzle | drag | rotate the view |
+| Puzzle | drag anywhere in the view | rotate the view like HSC |
 | Timeline | click | move the caret |
 | Timeline | double-click | move the caret, and end the text box's path at that segment |
 | Timeline | drag, or Shift+click | select along a path |

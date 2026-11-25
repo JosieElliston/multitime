@@ -8,6 +8,7 @@ use eframe::egui::{
     self, Align2, Color32, Event, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke,
     TextFormat, Ui, pos2, vec2,
 };
+use glam::{Quat, Vec3};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -27,8 +28,7 @@ const FONT: FontId = FontId::monospace(15.0);
 
 struct View {
     mode: InversionMode,
-    yaw: f32,
-    pitch: f32,
+    orientation: Quat,
 }
 
 /// There's one caret and selection, and mostly the same commands in each mode.
@@ -120,7 +120,10 @@ fn cube_move(key: Key) -> Option<&'static str> {
 
 impl App {
     pub fn new(doc: Doc, path: PathBuf) -> Self {
-        let view = |mode| View { mode, yaw: 0.6, pitch: 0.5 };
+        let view = |mode| View {
+            mode,
+            orientation: Quat::from_rotation_x(0.5) * Quat::from_rotation_y(-0.6),
+        };
         Self {
             saved: doc.clone(),
             session: Session::new(doc),
@@ -565,11 +568,13 @@ impl App {
             });
             let size = vec2(ui.available_width(), (height - (ui.cursor().top() - top) - 8.0).max(60.0));
             let (rect, r) = ui.allocate_exact_size(size, Sense::click_and_drag());
-            if r.dragged() {
-                let d = r.drag_delta() * 0.01;
+            let drag = r.drag_delta();
+            if drag != egui::Vec2::ZERO {
+                let angle = drag * (0.5 * std::f32::consts::TAU / rect.size().min_elem());
+                let rotation = Quat::from_rotation_x(angle.y) * Quat::from_rotation_y(angle.x);
+                // Apply each drag in screen space, before the existing orientation.
                 let v = &mut self.views[i];
-                v.yaw -= d.x;
-                v.pitch = (v.pitch + d.y).clamp(-1.5, 1.5);
+                v.orientation = (rotation * v.orientation).normalize();
             }
             let border = match inversion {
                 Inversion::Normal => MOVE,
@@ -860,14 +865,8 @@ fn highlight(text: &str) -> egui::text::LayoutJob {
 /// Draws the cube and returns the face under the pointer.
 fn draw_cube(ui: &Ui, rect: Rect, state: &Perm, view: &View, pointer: Option<Pos2>) -> Option<char> {
     let scale = rect.size().min_elem() / 5.6;
-    let (sy, cy) = view.yaw.sin_cos();
-    let (sp, cp) = view.pitch.sin_cos();
-    let rotate = |v: [f32; 3]| {
-        let (x, z) = (v[0] * cy - v[2] * sy, v[0] * sy + v[2] * cy);
-        [x, v[1] * cp - z * sp, v[1] * sp + z * cp]
-    };
     let project = |v: [f32; 3]| {
-        let [x, y, z] = rotate(v);
+        let Vec3 { x, y, z } = view.orientation * Vec3::from_array(v);
         let k = scale * 14.0 / (14.0 - z);
         rect.center() + vec2(x * k, -y * k)
     };
