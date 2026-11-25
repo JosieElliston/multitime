@@ -446,7 +446,9 @@ fn delete_leaves_other_tokens() {
         let text = rng.text(14);
         let c = rng.off(&text);
         let p = parse(&text);
-        let Some((new, nc)) = delete(&text, c, rng.below(2) == 0) else { continue };
+        let Some((new, nc)) = delete(&text, c, rng.below(2) == 0) else {
+            continue;
+        };
         assert!(new.is_char_boundary(nc));
         // Unmatched brackets can become matched.
         if !p.open.is_empty() || p.tokens.iter().any(|t| t.kind == TokenKind::Stray) {
@@ -481,4 +483,111 @@ fn gaps() {
             assert_eq!(gap(&text, s.caret().off), (want, false), "{text:?}");
         }
     }
+}
+
+/// The text with the unit at `|` in brackets `«»`.
+fn unit(s: &str, u: Unit) -> String {
+    let c = s.find('|').unwrap();
+    let t = s.replace('|', "");
+    match unit_at(&t, c, u) {
+        Some(r) => format!("{}«{}»{}", &t[..r.start], &t[r.clone()], &t[r.end..]),
+        None => t,
+    }
+}
+
+#[test]
+fn unit_examples() {
+    use Unit::*;
+    let cases = [
+        ("R |U2' F", Token, "R «U2'» F"),
+        ("R U2|' F", Token, "R «U2'» F"),
+        ("|2-3Rw2 F", Token, "«2-3Rw2» F"),
+        // Whitespace is the nearest token on its line.
+        ("R | U", Token, "R  «U»"),
+        ("R\n|\nU", Token, "R\n\nU"),
+        ("R |// a b\nU", Token, "R «// a b»\nU"),
+        ("R // a |b\nU", Token, "R «// a b»\nU"),
+        // A bracket or separator is its group.
+        ("x |[R, U] y", Token, "x «[R, U]» y"),
+        ("x [R|, U] y", Token, "x «[R, U]» y"),
+        ("x [R, U|] y", Token, "x «[R, U]» y"),
+        ("x [R, U]|2 y", Token, "x «[R, U]2» y"),
+        ("|^(R U", Token, "«^(R U»"),
+        ("x [|R, U] y", Token, "x [«R», U] y"),
+        // Runs end at brackets, separators, comments and line breaks.
+        ("x [R |U2, F D] y", Run, "x [«R U2», F D] y"),
+        ("x [R U2, F |D] y", Run, "x [R U2, «F D»] y"),
+        ("R U\nF |D // c\nB", Run, "R U\n«F D» // c\nB"),
+        ("R (U |F) D", Run, "R («U F») D"),
+        // A bracket's run is the group's insides.
+        ("R |( U F ) D", Run, "R ( «U F» ) D"),
+        ("x |[R U, F D] y", Run, "x [«R U, F D»] y"),
+        ("|// c", Run, "«// c»"),
+    ];
+    for (input, u, want) in cases {
+        assert_eq!(unit(input, u), want, "{input:?} {u:?}");
+    }
+}
+
+#[test]
+fn close_groups_examples() {
+    let t = "x [R, (U F)] y";
+    let close = |a: &str, b: &str| {
+        let r = close_groups(t, t.find(a).unwrap()..t.find(b).unwrap() + b.len());
+        t[r].to_owned()
+    };
+    assert_eq!(close("x", "R"), "x [R, (U F)]");
+    assert_eq!(close("R", "U"), "R, (U F)");
+    assert_eq!(close("R", ","), "R,");
+    assert_eq!(close("F", "y"), "[R, (U F)] y");
+    assert_eq!(close("U", "F"), "U F");
+    assert_eq!(close("F)", "F)]"), "[R, (U F)]");
+}
+
+#[test]
+fn units_hold() {
+    let mut rng = Rng(777);
+    for _ in 0..20_000 {
+        let text = rng.text(14);
+        let off = rng.off(&text);
+        for u in [Unit::Token, Unit::Run] {
+            if let Some(r) = unit_at(&text, off, u) {
+                assert!(text.get(r.clone()).is_some(), "{text:?} {off} {u:?}");
+                let c = close_groups(&text, r.clone());
+                assert_eq!(c, r, "units are closed: {text:?} {off} {u:?}");
+            }
+        }
+        let (a, b) = (rng.off(&text), rng.off(&text));
+        let r = a.min(b)..a.max(b);
+        let c = close_groups(&text, r.clone());
+        assert!(c.start <= r.start && r.end <= c.end && text.get(c.clone()).is_some(), "{text:?}");
+        assert_eq!(close_groups(&text, c.clone()), c, "{text:?}");
+    }
+}
+
+#[test]
+fn selecting_units_across_bubbles() {
+    let mut s = Session::new(Doc::new("R [U, F] >D B> L"));
+    let root = s.doc().root();
+    // From `R`, a drag to the `F` takes in its group.
+    let r = s.unit_at(Pos { seg: root, off: 0 }, Unit::Token).unwrap();
+    let f = s.unit_at(Pos { seg: root, off: 6 }, Unit::Token).unwrap();
+    s.select_units(r, f);
+    assert_eq!(s.anchor().off, 0);
+    assert_eq!(s.caret().off, 8);
+    // To `L`, two bubbles on.
+    let l_off = s.text().find('L').unwrap();
+    let l = s.unit_at_offset(l_off, Unit::Token).unwrap();
+    s.select_units(r, l);
+    assert_eq!(s.offset_of(s.anchor()), Some(0));
+    assert_eq!(s.caret_offset(), s.text().len());
+    // Backwards from `B`: the caret goes at the start.
+    let b = s.unit_at_offset(s.text().find('B').unwrap(), Unit::Token).unwrap();
+    let u = s.unit_at_offset(s.text().find('U').unwrap(), Unit::Token).unwrap();
+    s.select_units(b, u);
+    assert_eq!(s.caret_offset(), 2);
+    assert_eq!(s.offset_of(s.anchor()), Some(s.text().find('B').unwrap() + 1));
+    // A bubble's unit is the bubble.
+    let (start, end) = s.unit_at_offset(s.bubbles()[0].0.start, Unit::Token).unwrap();
+    assert_eq!((s.offset_of(start), s.offset_of(end)), (Some(9), Some(s.bubbles()[0].0.end)));
 }

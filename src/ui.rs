@@ -1,7 +1,7 @@
 //! egui front end. Holds only view state; everything else is in `Session`.
 
 use crate::doc::{Doc, Pos, SegId};
-use crate::notation::{self, GroupKind, Inversion, TokenKind};
+use crate::notation::{self, GroupKind, Inversion, TokenKind, Unit};
 use crate::puzzle::{self, Perm, STICKERS};
 use crate::session::{self, END, InversionMode, MARK, Session};
 use eframe::egui::{
@@ -51,6 +51,19 @@ enum TimelineAction {
     Go(Pos),
     /// Selects from `from`, or else from where the selection already starts.
     Select { from: Option<Pos>, to: Pos },
+    /// A double or triple click selected a unit.
+    StartUnits(Unit, (Pos, Pos)),
+    /// The drag after one reached a unit.
+    ExtendUnits((Pos, Pos)),
+}
+
+/// A drag after a double or triple click, which extends by whole units.
+#[derive(Clone, Copy)]
+struct UnitDrag {
+    unit: Unit,
+    /// The unit first clicked.
+    anchor: (Pos, Pos),
+    timeline: bool,
 }
 
 pub struct App {
@@ -66,6 +79,10 @@ pub struct App {
     /// A key was pressed since the pointer last moved. Otherwise a pointer
     /// resting on the text box would hide what's being typed.
     ignore_hover: bool,
+    /// Click count, time and place of the last primary press. egui only counts
+    /// clicks on release, too late to start a drag by units.
+    press: (u32, f64, Pos2),
+    unit_drag: Option<UnitDrag>,
 }
 
 impl eframe::App for App {
@@ -137,6 +154,8 @@ impl App {
             mode: Mode::Twist(0),
             preview: None,
             ignore_hover: false,
+            press: (0, f64::NEG_INFINITY, Pos2::ZERO),
+            unit_drag: None,
         }
     }
 
@@ -146,8 +165,22 @@ impl App {
             o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
         });
         ui.memory_mut(|m| m.request_focus(Id::unique(EDITOR)));
+        let (delay, dist) = ui
+            .options(|o| (o.input_options.max_double_click_delay, o.input_options.max_click_dist));
         ui.input(|i| {
             for event in &i.events {
+                if let Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    ..
+                } = *event
+                {
+                    let (n, time, at) = self.press;
+                    let again = i.time - time < delay && at.distance(pos) < dist;
+                    self.press = (if again { (n + 1).min(3) } else { 1 }, i.time, pos);
+                    self.unit_drag = None;
+                }
                 match event {
                     Event::PointerMoved(_) | Event::PointerButton { .. } => self.ignore_hover = false,
                     Event::Key { pressed: true, .. } | Event::Text(_) | Event::Cut
@@ -226,12 +259,15 @@ impl App {
             };
         }
         let Mode::Twist(view) = self.mode else {
-            // By words, the caret goes into and out of a bubble at its active
-            // branch. Otherwise, the text box does it.
+            // Option moves by tokens, as egui would by words.
             for (k, forward) in [(Key::ArrowLeft, false), (Key::ArrowRight, true)] {
-                let pressed = ui.input(|i| i.modifiers.alt && !i.modifiers.shift && i.key_pressed(k));
-                if pressed && self.session.step_bubble(forward) {
+                let (pressed, shift) = ui.input(|i| {
+                    let m = i.modifiers;
+                    (m.alt && !m.command && !m.ctrl && i.key_pressed(k), m.shift)
+                });
+                if pressed {
                     ui.input_mut(|i| i.consume_key(Modifiers::ALT, k));
+                    self.session.step_word(forward, shift);
                 }
             }
             return;
@@ -424,23 +460,58 @@ impl App {
             ui.ctx().request_discard("edited");
             return; // the rest of the layout is stale
         }
-        if let Some(r) = range
+        // Double and triple clicks, and drags after them, select by units.
+        // egui would select by its own words and lines.
+        let (pressed, down, released, shift, pointer) = ui.input(|i| {
+            let p = &i.pointer;
+            (
+                p.primary_pressed(),
+                p.primary_down(),
+                p.any_released(),
+                i.modifiers.shift,
+                p.interact_pos(),
+            )
+        });
+        // Offset of the character under a point.
+        let char_at = |p: Pos2| {
+            let local = (p - out.galley_pos).to_pos2();
+            let mut c = out.galley.cursor_from_pos(local.to_vec2());
+            let n: usize = c.index.into();
+            let before = n.checked_sub(1).and_then(|i| text.chars().nth(i));
+            if local.x < out.galley.pos_from_cursor(c).min.x && before.is_some_and(|ch| ch != '\n')
+            {
+                c = egui::text::CCursor::new(n - 1);
+            }
+            byte(c)
+        };
+        let unit = if self.press.0 == 2 { Unit::Token } else { Unit::Run };
+        if pressed
+            && !shift
+            && self.press.0 >= 2
+            && out.response.is_pointer_button_down_on()
+            && let Some(anchor) =
+                pointer.and_then(|p| self.session.unit_at_offset(char_at(p), unit))
+        {
+            self.unit_drag = Some(UnitDrag { unit, anchor, timeline: false });
+        }
+        let unit_drag = self.unit_drag.filter(|d| !d.timeline && (down || released));
+        if let Some(d) = unit_drag {
+            if let Some(target) =
+                pointer.and_then(|p| self.session.unit_at_offset(char_at(p), d.unit))
+            {
+                self.session.select_units(d.anchor, target);
+                ui.ctx().request_repaint();
+                if self.session.text() != text {
+                    ui.ctx().request_discard("switched branches");
+                    return; // the layout is stale
+                }
+            }
+        } else if let Some(r) = range
             && (byte(r.primary), byte(r.secondary)) != (caret, anchor)
         {
             let mut new = byte(r.primary);
             let pointer = ui.input(|i| i.pointer.primary_down() || i.pointer.any_released());
             let bubbles = self.session.bubbles();
-            // Words end at bubbles.
-            if ui.input(|i| i.modifiers.alt) && r.is_empty() && !pointer {
-                let bubbles = bubbles.iter().map(|b| &b.0);
-                if new > caret {
-                    let stops = bubbles.map(|b| b.start).filter(|s| *s >= caret);
-                    new = stops.fold(new, usize::min);
-                } else {
-                    let stops = bubbles.map(|b| b.end).filter(|s| *s <= caret);
-                    new = stops.fold(new, usize::max);
-                }
-            }
             // Selections don't end within bubbles, and Up and Down (which set
             // `h_pos`) only go to either side or to the active branch, since
             // anywhere else would switch branches.
@@ -667,6 +738,8 @@ impl App {
             let path = doc.path(self.session.tip());
             let caret = self.session.caret();
             let mut stops: Vec<(Pos2, Pos)> = vec![];
+            // Each token's dot, at its start.
+            let mut cells: Vec<(Pos2, Pos)> = vec![];
 
             // Selection, behind everything else.
             let index = |p: Pos| path.iter().position(|s| *s == p.seg).map(|i| (i, p.off));
@@ -748,6 +821,7 @@ impl App {
                             painter.circle_filled(c, 4.0, col);
                         }
                     }
+                    cells.push((c, Pos { seg, off: t.span.start }));
                     let right = c + vec2(TIMELINE_STEP / 2.0, 0.0);
                     stops.push((right, Pos { seg, off: t.span.end }));
                 }
@@ -773,23 +847,45 @@ impl App {
             };
             // Drags pick the branch by row, even past its end, out of those that
             // have started by then.
-            let drag_target = |p: Pos2, anchor: Pos| {
-                let (&seg, _) = nodes
+            let drag_seg = |p: Pos2, anchor: SegId| {
+                nodes
                     .iter()
-                    .filter(|(s, _)| related(anchor.seg, **s))
+                    .filter(|(s, _)| related(anchor, **s))
                     .filter(|(s, n)| **s == doc.root() || at(n, 0.0).x - TIMELINE_STEP / 2.0 <= p.x)
                     .min_by(|(_, a), (_, b)| {
                         let dy = |n: &Node| (at(n, 0.0).y - p.y).abs();
                         let dx = |n: &Node| (p.x - at(n, n.len).x).max(at(n, 0.0).x - p.x).max(0.0);
                         dy(a).total_cmp(&dy(b)).then(dx(a).total_cmp(&dx(b)))
-                    })?;
-                stops
+                    })
+                    .map(|(s, _)| *s)
+            };
+            // The nearest of `points` on that branch.
+            let drag_target = |points: &[(Pos2, Pos)], p: Pos2, anchor: SegId| {
+                let seg = drag_seg(p, anchor)?;
+                points
                     .iter()
                     .filter(|(_, pos)| pos.seg == seg)
                     .min_by(|a, b| (a.0.x - p.x).abs().total_cmp(&(b.0.x - p.x).abs()))
                     .map(|s| s.1)
             };
-            let shift = ui.input(|i| i.modifiers.shift);
+            let (shift, pressed, down, released) = ui.input(|i| {
+                let p = &i.pointer;
+                (i.modifiers.shift, p.primary_pressed(), p.primary_down(), p.any_released())
+            });
+            // Double and triple clicks, and drags after them, select by units.
+            let unit = if self.press.0 == 2 { Unit::Token } else { Unit::Run };
+            if pressed && !shift && self.press.0 >= 2 && r.is_pointer_button_down_on() {
+                let cell = cells
+                    .iter()
+                    .min_by(|a, b| a.0.distance(pointer).total_cmp(&b.0.distance(pointer)))
+                    .filter(|c| c.0.distance(pointer) <= 12.0)?;
+                let anchor = self.session.unit_at(cell.1, unit)?;
+                return Some(TimelineAction::StartUnits(unit, anchor));
+            }
+            if let Some(d) = self.unit_drag.filter(|d| d.timeline && (down || released)) {
+                let cell = drag_target(&cells, pointer, d.anchor.1.seg)?;
+                return Some(TimelineAction::ExtendUnits(self.session.unit_at(cell, d.unit)?));
+            }
             if r.dragged_by(egui::PointerButton::Primary) {
                 // Like in text: a drag selects, and Shift extends instead.
                 let origin = ui.input(|i| i.pointer.press_origin());
@@ -797,7 +893,7 @@ impl App {
                     Some(p) => Some(nearest_to(p, None)?.1),
                     None => None,
                 };
-                let to = drag_target(pointer, from.unwrap_or(self.session.anchor()))?;
+                let to = drag_target(&stops, pointer, from.unwrap_or(self.session.anchor()).seg)?;
                 return Some(TimelineAction::Select { from, to });
             }
             let nearest = nearest_to(pointer, shift.then(|| self.session.anchor()))?;
@@ -821,6 +917,14 @@ impl App {
                 TimelineAction::Go(pos) => self.session.go_to(pos),
                 TimelineAction::Select { from: Some(from), to } => self.session.set_selection(from, to),
                 TimelineAction::Select { from: None, to } => self.session.extend_to(to),
+                TimelineAction::StartUnits(unit, anchor) => {
+                    self.unit_drag = Some(UnitDrag { unit, anchor, timeline: true });
+                    self.session.select_units(anchor, anchor);
+                }
+                TimelineAction::ExtendUnits(target) => {
+                    let anchor = self.unit_drag.expect("dragging by units").anchor;
+                    self.session.select_units(anchor, target);
+                }
             }
             ui.ctx().request_repaint();
         }

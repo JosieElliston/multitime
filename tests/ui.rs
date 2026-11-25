@@ -24,6 +24,8 @@ fn harness(file: &str) -> Harness<'static, App> {
     let mut h = Harness::builder()
         .with_size(egui::vec2(1200.0, 800.0))
         .with_accessibility_check(false)
+        // Fast enough for double clicks.
+        .with_step_dt(1.0 / 60.0)
         .wgpu()
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);
@@ -117,6 +119,8 @@ fn hyperspeedcube_keys() {
     let mut h = Harness::builder()
         .with_size(egui::vec2(1200.0, 800.0))
         .with_accessibility_check(false)
+        // Fast enough for double clicks.
+        .with_step_dt(1.0 / 60.0)
         .build_ui_state(
             |ui, app: &mut App| app.show(ui),
             App::new(Doc::default(), "/dev/null".into()),
@@ -508,23 +512,23 @@ fn bubbles() {
     let at = |text: &str, off, inside| (text.to_owned(), off, inside);
     click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
     assert_eq!(caret(&h), at("D B L", 5, false));
-    // By words, it stops at each side, and keeps the branch.
+    // By tokens, the bubble is one, and passing it keeps the branch.
     for want in [4, 2, 0] {
         key(&mut h, Modifiers::ALT, Key::ArrowLeft);
         assert_eq!(caret(&h), at("D B L", want, false));
     }
     key(&mut h, Modifiers::ALT, Key::ArrowLeft);
-    assert_eq!(caret(&h), at("D B L", 0, true));
-    shot(&mut h, "inside");
-    key(&mut h, Modifiers::ALT, Key::ArrowLeft);
     assert_eq!(caret(&h), at("R U F", 5, false));
-    for inside in [true, false] {
-        key(&mut h, Modifiers::ALT, Key::ArrowRight);
-        assert_eq!(caret(&h), at("D B L", 0, inside));
-    }
+    key(&mut h, Modifiers::ALT, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("R U F", 4, false));
+    key(&mut h, Modifiers::ALT, Key::ArrowRight);
+    assert_eq!(caret(&h), at("R U F", 5, false));
+    key(&mut h, Modifiers::ALT, Key::ArrowRight);
+    assert_eq!(caret(&h), at("D B L", 0, false));
     // By characters, each branch is active as it goes by.
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     assert_eq!(caret(&h), at("L U", 0, true));
+    shot(&mut h, "inside");
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     assert_eq!(caret(&h), at("D B L", 0, true));
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
@@ -589,6 +593,8 @@ fn readme_screenshot() {
         .with_size(egui::vec2(900.0, 600.0))
         .with_pixels_per_point(2.0)
         .with_accessibility_check(false)
+        // Fast enough for double clicks.
+        .with_step_dt(1.0 / 60.0)
         .wgpu()
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);
@@ -606,4 +612,78 @@ fn readme_screenshot() {
     let m = 16;
     let (w, h) = (image.width() - 2 * m, image.height() - 2 * m);
     image::imageops::crop_imm(&image, m, m, w, h).to_image().save(path).unwrap();
+}
+
+/// Presses `n` times in quick succession, then drags through `path`.
+fn clicks(h: &mut Harness<'_, App>, n: usize, pos: Pos2, path: &[Pos2]) {
+    // Far enough apart in time from any earlier clicks.
+    h.run_steps(30);
+    let button = |pos, pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    h.event(Event::PointerMoved(pos));
+    h.run_steps(1);
+    for i in 0..n {
+        h.event(button(pos, true));
+        h.run_steps(1);
+        if i + 1 < n {
+            h.event(button(pos, false));
+            h.run_steps(1);
+        }
+    }
+    for &p in path {
+        h.event(Event::PointerMoved(p));
+        h.run_steps(2);
+    }
+    h.event(button(path.last().copied().unwrap_or(pos), false));
+    h.run_steps(3);
+}
+
+#[test]
+fn selecting_text_by_units() {
+    // Characters are 9 wide, from 23.
+    let mut h = harness("R U' [F, D B] L\nB' D2 // c\n");
+    let x = |i: f32| 27.5 + 9.0 * i;
+    let cases: &[(usize, Pos2, &[Pos2], &str)] = &[
+        (2, pos2(x(3.0), 50.0), &[], "U'"),
+        (2, pos2(x(5.0), 50.0), &[], "[F, D B]"),
+        (2, pos2(x(7.0), 50.0), &[], "[F, D B]"),
+        (3, pos2(x(11.0), 50.0), &[], "D B"),
+        (3, pos2(x(5.0), 50.0), &[], "F, D B"),
+        (3, pos2(x(1.0), 67.0), &[], "B' D2"),
+        (3, pos2(x(7.0), 67.0), &[], "// c"),
+        // A drag extends by units, and takes in whole groups.
+        (2, pos2(x(0.0), 50.0), &[pos2(x(9.0), 50.0)], "R U' [F, D B]"),
+        (2, pos2(x(14.0), 50.0), &[pos2(x(11.0), 50.0)], "[F, D B] L"),
+        (3, pos2(x(9.0), 50.0), &[pos2(x(1.0), 67.0)], "[F, D B] L\nB' D2"),
+    ];
+    for &(n, pos, path, want) in cases {
+        clicks(&mut h, n, pos, path);
+        assert_eq!(copied(&mut h), want, "{n} at {pos:?} through {path:?}");
+    }
+    shot(&mut h, "units");
+    assert_eq!(file(&h), "R U' [F, D B] L\nB' D2 // c\n");
+}
+
+#[test]
+fn selecting_timeline_by_units() {
+    // Cells are 12 wide, centered from 42.
+    let mut h = harness("R U [F, D] B\n>\n  L\n");
+    let (x, y) = (|i: f32| 42.0 + 12.0 * i, 625.0);
+    let cases: &[(usize, Pos2, &[Pos2], &str)] = &[
+        (2, pos2(x(1.0), y), &[], "U"),
+        (2, pos2(x(2.0), y), &[], "[F, D]"),
+        (3, pos2(x(3.0), y), &[], "F"),
+        (3, pos2(x(0.0), y), &[], "R U"),
+        (2, pos2(x(0.0), y), &[pos2(x(3.0), y)], "R U [F, D]"),
+        (2, pos2(x(7.0), y), &[pos2(x(9.0), y)], "B>L"),
+    ];
+    for &(n, pos, path, want) in cases {
+        clicks(&mut h, n, pos, path);
+        assert_eq!(copied(&mut h), want, "{n} at {pos:?} through {path:?}");
+    }
+    assert_eq!(file(&h), "R U [F, D] B\n>\n  L\n");
 }

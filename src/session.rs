@@ -1,7 +1,7 @@
 //! Document plus cursor, undo history, and views. No UI toolkit.
 
 use crate::doc::{Doc, Pos, SegId};
-use crate::notation::{self, Inversion, Parsed};
+use crate::notation::{self, Inversion, Parsed, Unit};
 use crate::puzzle::Perm;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -225,6 +225,56 @@ impl Session {
     pub fn anchor(&self) -> Pos {
         self.anchor.unwrap_or(self.caret)
     }
+    /// Ends of the unit that a click on the character at `pos` selects. Off a
+    /// segment's end, that's the bubble after it.
+    pub fn unit_at(&self, pos: Pos, unit: Unit) -> Option<(Pos, Pos)> {
+        let text = &self.doc.get(pos.seg).text;
+        let r = notation::unit_at(text, pos.off, unit)?;
+        Some((Pos { seg: pos.seg, off: r.start }, Pos { seg: pos.seg, off: r.end }))
+    }
+    /// The same for the character at an offset in the text box. A bubble's
+    /// unit is the bubble, keeping its active branch.
+    pub fn unit_at_offset(&self, off: usize, unit: Unit) -> Option<(Pos, Pos)> {
+        if let Some((_, seg)) = self.bubbles().into_iter().find(|(r, _)| r.contains(&off)) {
+            let parent = self.doc.get(seg).parent.expect("bubbles have parents");
+            return Some((self.doc.end(parent), Pos { seg, off: 0 }));
+        }
+        self.unit_at(self.at_offset(off).0, unit)
+    }
+    /// Selects from the start of one unit to the end of another, and any group
+    /// whose bracket that covers. The caret goes at `target`'s far end. Does
+    /// nothing if no path has both.
+    pub fn select_units(&mut self, anchor: (Pos, Pos), target: (Pos, Pos)) {
+        let (a, t) = (anchor.1.seg, target.1.seg);
+        let deeper = if self.doc.path(t).contains(&a) {
+            t
+        } else if self.doc.path(a).contains(&t) {
+            a
+        } else {
+            return;
+        };
+        if !self.doc.path(self.tip).contains(&deeper) {
+            self.show(deeper);
+        }
+        let path = self.doc.path(self.tip);
+        let key = |p: &Pos| (path.iter().position(|s| *s == p.seg).expect("on path"), p.off);
+        let mut start = std::cmp::min_by_key(anchor.0, target.0, key);
+        let mut end = std::cmp::max_by_key(anchor.1, target.1, key);
+        let text = |seg| &self.doc.get(seg).text;
+        if start.seg == end.seg {
+            let r = notation::close_groups(text(start.seg), start.off..end.off);
+            (start.off, end.off) = (r.start, r.end);
+        } else {
+            start.off =
+                notation::close_groups(text(start.seg), start.off..text(start.seg).len()).start;
+            end.off = notation::close_groups(text(end.seg), 0..end.off).end;
+        }
+        if key(&target.0) < key(&anchor.0) {
+            self.set_selection(end, start);
+        } else {
+            self.set_selection(start, end);
+        }
+    }
     /// Moves the caret to the end of a segment.
     pub fn select(&mut self, seg: SegId) {
         self.go_to(self.doc.end(seg));
@@ -287,6 +337,32 @@ impl Session {
     }
     pub fn step(&mut self, forward: bool, extend: bool) {
         self.move_caret(self.stepped(forward), extend);
+    }
+    /// Moves the caret like Option+arrows in text: to the start of the token
+    /// before it, or the end of the one after it. A fork counts as a token, and
+    /// passing it keeps the branch.
+    pub fn step_word(&mut self, forward: bool, extend: bool) {
+        if self.inside {
+            self.step_bubble(forward);
+            return;
+        }
+        let path = self.doc.path(self.tip);
+        let Pos { seg, off } = self.caret;
+        let i = path.iter().position(|s| *s == seg).expect("caret on path");
+        let tokens = notation::parse(&self.doc.get(seg).text).tokens;
+        let pos = if forward {
+            match tokens.iter().find(|t| t.span.end > off) {
+                Some(t) => Pos { seg, off: t.span.end },
+                None => path.get(i + 1).map_or(self.caret, |&next| Pos { seg: next, off: 0 }),
+            }
+        } else {
+            match tokens.iter().rev().find(|t| t.span.start < off) {
+                Some(t) => Pos { seg, off: t.span.start },
+                None if i > 0 => self.doc.end(path[i - 1]),
+                None => Pos { seg, off: 0 },
+            }
+        };
+        self.move_caret(pos, extend);
     }
     /// Moves the caret to the start or end of the path.
     pub fn step_all(&mut self, forward: bool, extend: bool) {

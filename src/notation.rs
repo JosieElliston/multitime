@@ -491,3 +491,117 @@ pub fn delete(text: &str, caret: usize, forward: bool) -> Option<(String, usize)
     }
     Some((format!("{before}{space}{after}"), before.len()))
 }
+
+/// What a double click (`Token`) or a triple click (`Run`) selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    /// A token, or the whole group of a bracket or separator.
+    Token,
+    /// Tokens up to the nearest bracket, separator, comment or line break, or a
+    /// group's insides.
+    Run,
+}
+
+/// A bracketed group: its whole span, its tokens' indices, and the span between
+/// its brackets. An unclosed group runs to the last token.
+struct Group {
+    outer: Range<usize>,
+    members: Vec<usize>,
+    inner: Range<usize>,
+}
+
+fn groups(text: &str, tokens: &[Token]) -> Vec<Group> {
+    let mut out = vec![];
+    let mut stack: Vec<Group> = vec![];
+    let last = tokens.last().map_or(0, |t| t.span.end);
+    for (i, t) in tokens.iter().enumerate() {
+        let s = &text[t.span.clone()];
+        if opener(s).is_some() {
+            let span = t.span.clone();
+            stack.push(Group { outer: span.start..last, members: vec![i], inner: span.end..last });
+        } else if t.kind == TokenKind::Sep {
+            stack.last_mut().expect("in a group").members.push(i);
+        } else if s.starts_with([')', ']']) && t.kind != TokenKind::Stray {
+            let mut g = stack.pop().expect("closes a group");
+            g.members.push(i);
+            g.outer.end = t.span.end;
+            g.inner.end = t.span.start;
+            out.push(g);
+        }
+    }
+    out.extend(stack);
+    out
+}
+
+/// The unit at `off`, for a click on the character starting there. Whitespace
+/// counts as the nearest token on its line. `None` if there isn't one.
+pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
+    let tokens = parse(text).tokens;
+    let line = |o: usize| text[..o].matches('\n').count();
+    let index = tokens.iter().position(|t| t.span.contains(&off)).or_else(|| {
+        let dist =
+            |t: &Token| t.span.start.saturating_sub(off).max(off.saturating_sub(t.span.end - 1));
+        let on_line = tokens.iter().enumerate().filter(|(_, t)| {
+            line(t.span.start) == line(off)
+                || (t.kind == TokenKind::Comment && line(t.span.end) == line(off))
+        });
+        on_line.min_by_key(|(_, t)| dist(t)).map(|(i, _)| i)
+    })?;
+    let groups = groups(text, &tokens);
+    if let Some(g) = groups.iter().find(|g| g.members.contains(&index)) {
+        return Some(match unit {
+            Unit::Token => g.outer.clone(),
+            Unit::Run => {
+                // Just the tokens, without the whitespace inside the brackets.
+                let inside: Vec<_> = tokens
+                    .iter()
+                    .filter(|t| g.inner.start <= t.span.start && t.span.end <= g.inner.end)
+                    .collect();
+                match (inside.first(), inside.last()) {
+                    (Some(a), Some(b)) => a.span.start..b.span.end,
+                    _ => g.inner.start..g.inner.start,
+                }
+            }
+        });
+    }
+    let span = tokens[index].span.clone();
+    if unit == Unit::Token {
+        return Some(span);
+    }
+    // Not a bracket, even a nested NISS one (an error), nor a comment.
+    let plain = |i: usize| {
+        let kind = matches!(tokens[i].kind, TokenKind::Move | TokenKind::Pause | TokenKind::Error);
+        kind && !groups.iter().any(|g| g.members.contains(&i))
+    };
+    if !plain(index) {
+        return Some(span);
+    }
+    let joined = |a: usize, b: usize| {
+        plain(a) && plain(b) && !text[tokens[a].span.end..tokens[b].span.start].contains('\n')
+    };
+    let (mut lo, mut hi) = (index, index);
+    while lo > 0 && joined(lo - 1, lo) {
+        lo -= 1;
+    }
+    while hi + 1 < tokens.len() && joined(hi, hi + 1) {
+        hi += 1;
+    }
+    Some(tokens[lo].span.start..tokens[hi].span.end)
+}
+
+/// Grows a range to take in the whole of any group whose bracket it covers,
+/// unless it's within the group's brackets.
+pub fn close_groups(text: &str, mut r: Range<usize>) -> Range<usize> {
+    let tokens = parse(text).tokens;
+    let groups = groups(text, &tokens);
+    loop {
+        let grow = groups.iter().find(|g| {
+            let overlaps = r.start < g.outer.end && g.outer.start < r.end;
+            let inside = g.inner.start <= r.start && r.end <= g.inner.end;
+            let covers = r.start <= g.outer.start && g.outer.end <= r.end;
+            overlaps && !inside && !covers
+        });
+        let Some(g) = grow else { return r };
+        r = r.start.min(g.outer.start)..r.end.max(g.outer.end);
+    }
+}

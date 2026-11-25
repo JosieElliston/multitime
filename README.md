@@ -8,7 +8,6 @@ a 3x3x3 simulator for trying out FMC tools for [Hyperspeedcube 2](https://github
 cargo run [file]  # default: solve.txt
 ```
 
-TODO: sections: input, navigation, mouse
 
 ## elements
 
@@ -30,6 +29,7 @@ esc cycles between focus on the text box and the two puzzles.
 | --- | --- | --- |
 | Most keys | insert text | insert a twist (see [twist keys](#twist-keys)) |
 | Left, Right | move by character | move by token |
+| Option+Left, Option+Right | move by token | |
 | Up, Down | move by line | switch branches at the bubble before the caret |
 | Backspace, Delete | delete a character | delete a token (a bracket deletes its whole group) |
 | Home, End | go to the ends of the line | go to the ends of the path |
@@ -41,6 +41,14 @@ a **bubble** has a `>` for each child, with one active child.
 the caret can go into a bubble, and whichever `>` it's right after becomes active. to pass a bubble without changing the active branch, hold option.
 
 cmd+[ and cmd+], or clicking a `>`, also switch branches.
+
+## mouse
+
+in both the text box and the timeline:
+
+- double-click selects a token. on a bracket or separator, it selects the whole group.
+- triple-click selects a run: the tokens up to the nearest bracket, separator, comment, or line break, such as one side of a commutator. on a bracket or separator, it selects what's inside the group.
+- dragging after either extends by the same unit. a drag over a bracket takes in its whole group.
 
 ### making forks
 
