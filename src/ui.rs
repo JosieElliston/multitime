@@ -5,8 +5,8 @@ use crate::notation::{self, GroupKind, Inversion, TokenKind};
 use crate::puzzle::{self, Perm, STICKERS};
 use crate::session::{InversionMode, Session};
 use eframe::egui::{
-    self, Align2, Color32, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, TextFormat,
-    Ui, Vec2, pos2, vec2,
+    self, Align2, Color32, Event, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke,
+    TextFormat, Ui, Vec2, pos2, vec2,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -52,6 +52,40 @@ fn token_color(kind: TokenKind) -> Color32 {
         TokenKind::Open | TokenKind::Sep | TokenKind::Close { .. } => GROUP,
         TokenKind::BadClose | TokenKind::Stray | TokenKind::Error => ERROR,
     }
+}
+
+// Hyperspeedcube's Rubiks3D Default preset, including ^MU.
+fn cube_move(key: Key) -> Option<&'static str> {
+    Some(match key {
+        Key::Num2 | Key::V => "U2'",
+        Key::Num3 => "M",
+        Key::Num4 | Key::F => "U'",
+        Key::Num8 | Key::J => "U",
+        Key::Num9 => "M'",
+        Key::Num0 => "M2'",
+        Key::Q => "z'",
+        Key::W => "B",
+        Key::E => "L'",
+        Key::R => "y2'",
+        Key::I => "R",
+        Key::O => "B'",
+        Key::P => "z",
+        Key::A => "y'",
+        Key::D => "L",
+        Key::G => "F'",
+        Key::H => "F",
+        Key::K => "R'",
+        Key::Semicolon => "y",
+        Key::Z => "x'",
+        Key::X => "D",
+        Key::C => "L2'",
+        Key::B => "D2",
+        Key::N => "U2",
+        Key::M => "R2'",
+        Key::Comma => "D'",
+        Key::Period | Key::Slash => "x",
+        _ => return None,
+    })
 }
 
 impl App {
@@ -145,27 +179,36 @@ impl App {
         if key(none, Key::ArrowDown) {
             self.session.cycle_sibling(1);
         }
-        let twists = [
-            (Key::R, "R"),
-            (Key::L, "L"),
-            (Key::U, "U"),
-            (Key::D, "D"),
-            (Key::F, "F"),
-            (Key::B, "B"),
-            (Key::M, "M"),
-            (Key::E, "E"),
-            (Key::S, "S"),
-            (Key::X, "x"),
-            (Key::Y, "y"),
-            (Key::Z, "z"),
-        ];
-        for (k, name) in twists {
-            if key(shift, k) {
-                self.twist(self.active_view, &format!("{name}'"));
-            } else if key(none, k) {
-                self.twist(self.active_view, name);
-            }
-        }
+        ui.input_mut(|input| {
+            input.events.retain(|event| {
+                let Event::Key { key, physical_key, pressed: true, repeat, modifiers } = *event else {
+                    return true;
+                };
+                if modifiers != none && modifiers != shift {
+                    return true;
+                }
+                if key == Key::Backspace {
+                    if modifiers.shift {
+                        self.session.redo();
+                    } else {
+                        self.session.undo();
+                    }
+                    return false;
+                }
+                let Some(name) = cube_move(physical_key.unwrap_or(key)) else {
+                    return true;
+                };
+                if !repeat {
+                    let (face, amount) = name.split_at(1);
+                    if modifiers.shift && "RLUDFB".contains(face) {
+                        self.twist(self.active_view, &format!("{face}w{amount}"));
+                    } else {
+                        self.twist(self.active_view, name);
+                    }
+                }
+                false
+            });
+        });
     }
 
     fn twist(&mut self, view: usize, mv: &str) {
@@ -205,10 +248,10 @@ impl App {
                 s.delete_branch();
             }
             ui.separator();
-            if button(ui, true, "Undo", "Cmd+Z") {
+            if button(ui, true, "Undo", "Cmd+Z or Backspace outside the editor") {
                 s.undo();
             }
-            if button(ui, true, "Redo", "Cmd+Shift+Z") {
+            if button(ui, true, "Redo", "Cmd+Shift+Z or Shift+Backspace outside the editor") {
                 s.redo();
             }
             ui.separator();

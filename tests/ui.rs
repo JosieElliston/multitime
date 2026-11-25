@@ -103,12 +103,46 @@ fn twisting() {
     click(&mut h, pos2(990.0, 460.0), PointerButton::Secondary);
     assert!(file(&h).contains("^("), "{}", file(&h));
     // Keyboard goes to the last-clicked view.
-    key(&mut h, Modifiers::SHIFT, Key::U);
+    key(&mut h, Modifiers::NONE, Key::F);
     assert!(file(&h).contains("U')"), "{}", file(&h));
     key(&mut h, Modifiers::COMMAND, Key::Z);
     key(&mut h, Modifiers::COMMAND, Key::Z);
     assert_eq!(file(&h), after);
     shot(&mut h, "twist");
+}
+
+#[test]
+fn hyperspeedcube_keys() {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1200.0, 800.0))
+        .with_accessibility_check(false)
+        .build_ui_state(
+            |ui, app: &mut App| app.show(ui),
+            App::new(Doc::default(), "/dev/null".into()),
+        );
+    h.run_steps(3);
+    // A different keyboard layout can report W at the physical comma position.
+    h.event(Event::Key {
+        key: Key::W,
+        physical_key: Some(Key::Comma),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::SHIFT,
+    });
+    h.run_steps(3);
+    key(&mut h, Modifiers::SHIFT, Key::Num3);
+    key(&mut h, Modifiers::NONE, Key::Semicolon);
+    assert_eq!(file(&h), "Dw' M y\n");
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "Dw' M\n");
+    key(&mut h, Modifiers::SHIFT, Key::Backspace);
+    assert_eq!(file(&h), "Dw' M y\n");
+
+    click(&mut h, pos2(100.0, 45.0), PointerButton::Primary);
+    key(&mut h, Modifiers::NONE, Key::End);
+    typ(&mut h, " R2");
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "Dw' M y R\n");
 }
 
 #[test]
