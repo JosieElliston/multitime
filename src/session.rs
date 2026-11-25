@@ -229,11 +229,19 @@ impl Session {
     fn delete_fork(&mut self, forward: bool) {
         let path = self.doc.path(self.tip);
         let i = path.iter().position(|s| *s == self.caret.seg).expect("caret on path");
-        if !forward {
-            self.join();
-        } else if let Some(&next) = path.get(i + 1) {
-            self.join_segment(next);
-        }
+        let seg = if forward { path.get(i + 1) } else { path.get(i) };
+        let Some(&seg) = seg else {
+            return;
+        };
+        let Some(parent) = self.doc.get(seg).parent else {
+            return;
+        };
+        let before = self.snapshot();
+        let text = &self.doc.get(parent).text;
+        let padding = notation::padding(text, &self.doc.get(seg).text);
+        self.doc.set_text(parent, format!("{text}{padding}"));
+        self.join_into_parent(seg);
+        self.record(before);
     }
 
     /// Offset in the path's text.
@@ -242,12 +250,12 @@ impl Session {
     }
 
     pub fn twist(&mut self, mv: &str, inversion: Inversion) {
-        let before = self.snapshot();
-        let text = &self.doc.get(self.caret.seg).text;
-        let (text, off) = notation::twist(text, self.caret.off, mv, inversion);
-        self.doc.set_text(self.caret.seg, text);
-        self.caret.off = off;
-        self.record(before);
+        let old = &self.doc.get(self.caret.seg).text;
+        let (new, off) = notation::twist(old, self.caret.off, mv, inversion);
+        let start = self.offset(self.caret) - self.caret.off;
+        let mut text = self.doc.path_text(self.tip);
+        text.replace_range(start..start + old.len(), &new);
+        self.edit_once(&text, start + off);
     }
 
     /// Like `edit`, but always its own undo step.
@@ -278,9 +286,9 @@ impl Session {
     pub fn split(&mut self) {
         let before = self.snapshot();
         let old = self.caret.seg;
-        let new = self.doc.split(self.caret);
+        let (new, last) = self.doc.split(self.caret);
         if self.tip == old {
-            self.tip = new;
+            self.tip = last;
         }
         self.caret = Pos { seg: new, off: 0 };
         self.record(before);
@@ -293,10 +301,11 @@ impl Session {
     }
     /// Joins the caret's segment to its parent.
     pub fn join(&mut self) {
-        self.join_segment(self.caret.seg);
-    }
-    fn join_segment(&mut self, seg: SegId) {
         let before = self.snapshot();
+        self.join_into_parent(self.caret.seg);
+        self.record(before);
+    }
+    fn join_into_parent(&mut self, seg: SegId) {
         if let Some(start) = self.doc.join(seg) {
             if self.caret.seg == seg {
                 self.caret = Pos { seg: start.seg, off: start.off + self.caret.off };
@@ -305,7 +314,6 @@ impl Session {
                 self.tip = start.seg;
             }
         }
-        self.record(before);
     }
     /// Deletes the caret's segment and everything after it.
     pub fn delete_branch(&mut self) {

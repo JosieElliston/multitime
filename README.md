@@ -12,11 +12,11 @@ cargo run [file]  # default: solve.txt
 
 ### forks
 
-A `>` is like a line break that can have several next lines. The text box shows all of a fork's branches as a row of `>`s, with the current one highlighted. Click another to switch to it.
+A `>` is where the text can continue in several ways. The text box shows all of a fork's branches as a row of `>`s in a box, with the current one highlighted; they're a single character. Click another to switch to it.
 
-Press Cmd+Enter to fork at the caret. If there's text after it, that becomes the other branch.
+Press Cmd+Enter to fork at the caret, or after the comment that it's in. If there's text after it, that becomes the other branch. Right before or after a `>` on the same line, it adds a branch to that one instead.
 
-In the text box, a `>` is plain text. Alone on its line, it splits the segment there: the text after it, and any branches, become a single branch. That's the same whether it's typed or pasted. Delete a `>` to merge its branch into what came before; any other branches then continue from the end of the merged text.
+In the text box, a `>` is plain text. It splits the segment there: the text after it, and any branches, become a single branch. That's the same whether it's typed or pasted. In a comment, it does nothing, so commenting one out is like deleting it. Delete a `>` to merge its branch into what came before; any other branches then continue from the end of the merged text.
 
 ### text mode and twist mode
 
@@ -77,7 +77,7 @@ These work in both modes:
 
 ### files
 
-A saved file is plain text. Each branch starts with a `>`, and its contents are indented:
+A saved file is plain text. Each branch starts with a `>` on its own line, and its contents are indented. The line breaks around the `>` aren't part of the text:
 
 ```text
 R' U' F D2 L

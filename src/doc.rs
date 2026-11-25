@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SegId(pub u32);
 
+/// A segment has no forks in its text, and doesn't end in a comment if it has
+/// children. So a path's text can be split back into its segments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
     pub parent: Option<SegId>,
@@ -28,41 +30,32 @@ pub struct Pos {
     pub off: usize,
 }
 
+/// Splits text on its forks: each `>` that isn't in a comment.
+pub fn split_forks(text: &str) -> Vec<&str> {
+    let mut out = vec![];
+    let mut start = 0;
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let code = &line[..line.find("//").unwrap_or(line.len())];
+        for (i, _) in code.match_indices(FORK) {
+            out.push(&text[start..line_start + i]);
+            start = line_start + i + FORK.len();
+        }
+        line_start += line.len();
+    }
+    out.push(&text[start..]);
+    out
+}
+
 /// How a fork is written between two segments of a path.
-pub const FORK: &str = "\n>\n";
+pub const FORK: &str = ">";
 
 fn is_fork_line(line: &str) -> bool {
-    line.trim() == ">"
+    line.trim() == FORK
 }
-
-/// Splits text on fork lines.
-fn split_forks(text: &str) -> Vec<String> {
-    let mut out: Vec<Vec<&str>> = vec![vec![]];
-    for line in text.split('\n') {
-        if is_fork_line(line) {
-            out.push(vec![]);
-        } else {
-            out.last_mut().expect("nonempty").push(line);
-        }
-    }
-    out.into_iter().map(|lines| lines.join("\n")).collect()
-}
-
-/// Finds which piece of `split_forks(text)` an offset lands in, and where.
-fn caret_piece(text: &str, pieces: &[String], off: usize) -> (usize, usize) {
-    let line_start = text[..off].rfind('\n').map_or(0, |n| n + 1);
-    let line_end = text[off..].find('\n').map_or(text.len(), |n| off + n);
-    let on_fork = is_fork_line(&text[line_start..line_end]);
-    let before = split_forks(&text[..line_start]);
-    let mut i = before.len() - 1;
-    if on_fork {
-        // A caret on a fork line goes to the start of the next segment.
-        return (i + 1, 0);
-    }
-    // `before` ends with the empty start of the caret's line.
-    let piece_start = before[i].len();
-    i = i.min(pieces.len() - 1);
-    (i, (piece_start + off - line_start).min(pieces[i].len()))
+/// Whether something appended to the text would be commented out.
+fn in_comment(text: &str) -> bool {
+    text.rsplit('\n').next().is_some_and(|line| line.contains("//"))
 }
 
 impl Default for Doc {
@@ -74,8 +67,10 @@ impl Default for Doc {
 impl Doc {
     pub fn new(root_text: &str) -> Self {
         let root = SegId(0);
-        let seg = Segment { parent: None, children: vec![], text: root_text.to_owned() };
-        Self { segs: BTreeMap::from([(root, seg)]), root, next: 1 }
+        let seg = Segment { parent: None, children: vec![], text: String::new() };
+        let mut doc = Self { segs: BTreeMap::from([(root, seg)]), root, next: 1 };
+        doc.set_split(root, root_text);
+        doc
     }
 
     pub fn root(&self) -> SegId {
@@ -92,6 +87,27 @@ impl Doc {
     }
     pub fn set_text(&mut self, id: SegId, text: String) {
         self.get_mut(id).text = text;
+    }
+    /// Sets a segment's text, splitting it on forks. Returns the last piece,
+    /// which gets its children.
+    fn set_split(&mut self, id: SegId, text: &str) -> SegId {
+        let mut pieces = split_forks(text).into_iter();
+        let mut cur = id;
+        let mut piece = pieces.next().expect("nonempty");
+        for next in pieces {
+            cur = self.split_into(cur, piece.to_owned(), String::new());
+            piece = next;
+        }
+        self.set_text(cur, piece.to_owned());
+        self.end_comment(cur);
+        cur
+    }
+    /// Ends the comment that a fork would otherwise be in.
+    fn end_comment(&mut self, id: SegId) {
+        let seg = self.get_mut(id);
+        if !seg.children.is_empty() && in_comment(&seg.text) {
+            seg.text.push('\n');
+        }
     }
     pub fn end(&self, seg: SegId) -> Pos {
         Pos { seg, off: self.get(seg).text.len() }
@@ -142,8 +158,7 @@ impl Doc {
         let starts = self.path_starts(tip);
         for (i, &seg) in path.iter().enumerate() {
             let end = starts[i] + self.get(seg).text.len();
-            // The second half of the fork belongs to the next segment.
-            if offset < end + 2 || i + 1 == path.len() {
+            if offset <= end || i + 1 == path.len() {
                 return Pos { seg, off: offset.clamp(starts[i], end) - starts[i] };
             }
         }
@@ -155,6 +170,7 @@ impl Doc {
         self.next += 1;
         self.segs.insert(id, Segment { parent: Some(parent), children: vec![], text });
         self.get_mut(parent).children.push(id);
+        self.end_comment(parent);
         id
     }
 
@@ -171,23 +187,28 @@ impl Doc {
         new
     }
 
-    pub fn split(&mut self, pos: Pos) -> SegId {
+    /// Returns the segment after the split, and the one that now has the
+    /// children. They differ if cutting a `//` uncomments a fork.
+    pub fn split(&mut self, pos: Pos) -> (SegId, SegId) {
         let c = notation::cut(&self.get(pos.seg).text, pos.off);
-        self.split_into(pos.seg, c.left, c.right)
+        let new = self.split_into(pos.seg, c.left, String::new());
+        (new, self.set_split(new, &c.right))
     }
 
-    /// Adds an empty branch that continues from `pos`.
+    /// Adds an empty branch that continues from `pos`. Right after or before a
+    /// fork on the same line, it's a branch of that fork.
     pub fn fork(&mut self, pos: Pos) -> Pos {
         let c = notation::cut(&self.get(pos.seg).text, pos.off);
-        let parent = self.get(pos.seg).parent;
-        let at = if c.right.trim().is_empty() {
-            pos.seg
-        } else if let Some(parent) = parent
-            && c.left.trim().is_empty()
+        let blank = |s: &str| s.trim().is_empty() && !s.contains('\n');
+        let at = if let Some(parent) = self.get(pos.seg).parent
+            && blank(&c.left)
         {
             parent
+        } else if blank(&c.right) {
+            pos.seg
         } else {
-            self.split_into(pos.seg, c.left, c.right);
+            let new = self.split_into(pos.seg, c.left, String::new());
+            self.set_split(new, &c.right);
             pos.seg
         };
         let (text, off) = c.fork;
@@ -205,11 +226,9 @@ impl Doc {
         let p = self.get_mut(parent);
         let i = p.children.iter().position(|c| *c == id).expect("is parent's child");
         p.children.splice(i..=i, seg.children);
-        if !p.text.is_empty() && !seg.text.is_empty() {
-            p.text.push('\n');
-        }
         let off = p.text.len();
         p.text.push_str(&seg.text);
+        self.end_comment(parent);
         Some(Pos { seg: parent, off })
     }
 
@@ -229,17 +248,18 @@ impl Doc {
     /// Applies a text editor's change to the path ending at `tip`, where
     /// `caret` is the editor's caret afterward. Returns the new tip and caret.
     ///
-    /// Forks that were touched get joined. Fork lines that were written split
-    /// the segment.
+    /// The path's text becomes exactly `new`, so forks that are gone from it get
+    /// joined, and new ones split. (Except that `end_comment` may append to it.)
     pub fn edit_path(&mut self, tip: SegId, new: &str, caret: usize) -> (SegId, Pos) {
+        let caret = new[..caret].replace('\r', "").len();
+        let new = &new.replace('\r', "");
         let old = self.path_text(tip);
         let path = self.path(tip);
         let starts = self.path_starts(tip);
-        let end_of = |i: usize, doc: &Self| starts[i] + doc.get(path[i]).text.len();
 
         // The edit ends at the caret, which disambiguates the diff.
         let (old_b, new_b) = (old.as_bytes(), new.as_bytes());
-        let tail = &new_b[caret.min(new.len())..];
+        let tail = &new_b[caret..];
         let suffix = if old_b.ends_with(tail) {
             tail.len()
         } else {
@@ -255,68 +275,36 @@ impl Doc {
             p -= 1;
         }
         let e = old.len() - suffix;
-        let ins = new[p..new.len() - suffix].replace('\r', "");
 
-        // Range of segments affected, and what is kept at each end.
-        let (h, t, p, e) = if p == e {
-            let pos = self.path_pos(tip, p);
-            let i = path.iter().position(|s| *s == pos.seg).expect("on path");
-            let at = starts[i] + pos.off;
-            (i, i, at, at)
-        } else {
-            let h = (0..path.len()).rev().find(|&i| starts[i] <= p).expect("starts at 0");
-            let t = (h..path.len()).find(|&i| e <= end_of(i, self)).expect("ends at len");
-            (h, t, p, e)
+        // Rewrite the segments that it touches, and any that it comments out.
+        let index = |off| {
+            let seg = self.path_pos(tip, off).seg;
+            path.iter().position(|s| *s == seg).expect("on path")
         };
-        let (h_end, t_start) = (end_of(h, self), starts[t]);
-        let mut head = self.get(path[h]).text[..p.min(h_end) - starts[h]].to_owned();
-        let tail = self.get(path[t]).text[e.max(t_start) - t_start..].to_owned();
-        let within_fork = p >= h_end && e <= t_start;
-        let between = within_fork && h != t && !head.is_empty() && !tail.is_empty();
-        head.push_str(&ins);
-        let mut caret_off = head.len();
-        if between {
-            head.push('\n');
-            // Backspace from after the fork, rather than Delete from before it.
-            if p > h_end {
-                caret_off = head.len();
-            }
+        let (h, mut t) = (index(p), index(e));
+        let mut text = format!(
+            "{}{}{}",
+            &old[starts[h]..p],
+            &new[p..new.len() - suffix],
+            &old[e..starts[t] + self.get(path[t]).text.len()],
+        );
+        while in_comment(&text) && t + 1 < path.len() {
+            t += 1;
+            text.push_str(FORK);
+            text.push_str(&self.get(path[t]).text);
         }
-        head.push_str(&tail);
-
         for &s in &path[h + 1..=t] {
             self.set_text(s, String::new());
             self.join(s);
         }
-        let seg = path[h];
-        self.set_text(seg, head);
-        let mut tip = if self.segs.contains_key(&tip) { tip } else { seg };
-        let mut caret = Pos { seg, off: caret_off };
-
-        let text = self.get(seg).text.clone();
-        let pieces = split_forks(&text);
-        if pieces.len() > 1 {
-            let (i, off) = caret_piece(&text, &pieces, caret.off);
-            let mut cur = seg;
-            let mut ids = vec![seg];
-            let mut pieces = pieces.into_iter();
-            let mut piece = pieces.next().expect("nonempty");
-            for next in pieces {
-                cur = self.split_into(cur, piece, String::new());
-                ids.push(cur);
-                piece = next;
-            }
-            self.set_text(cur, piece);
-            if tip == seg {
-                tip = cur;
-            }
-            caret = Pos { seg: ids[i], off };
-        }
-        (tip, caret)
+        let last = self.set_split(path[h], &text);
+        let tip = if t + 1 == path.len() { last } else { tip };
+        (tip, self.path_pos(tip, caret))
     }
 
-    /// Serializes to plain text: the same as `path_text`, but with every branch
-    /// and with children indented.
+    /// Serializes to plain text, with each branch indented under a line with its
+    /// fork. The line breaks around that line aren't part of the segments, except
+    /// for one that ends a comment.
     pub fn to_file(&self) -> String {
         let mut out = String::new();
         self.write(self.root, 0, &mut out);
@@ -324,7 +312,9 @@ impl Doc {
     }
     fn write(&self, id: SegId, depth: usize, out: &mut String) {
         let seg = self.get(id);
-        for line in seg.text.split('\n') {
+        let ended = seg.text.strip_suffix('\n');
+        let text = ended.filter(|s| !seg.children.is_empty() && in_comment(s)).unwrap_or(&seg.text);
+        for line in text.split('\n') {
             if !line.is_empty() {
                 out.extend(std::iter::repeat_n("  ", depth));
                 out.push_str(line);
@@ -350,7 +340,8 @@ impl Doc {
                 if indent % 2 != 0 || depth >= stack.len() {
                     return Err(format!("line {}: bad indentation before `>`", n + 1));
                 }
-                doc.set_text(*stack.last().expect("nonempty"), lines.join("\n"));
+                let last = stack.last_mut().expect("nonempty");
+                *last = doc.set_split(*last, &lines.join("\n"));
                 lines.clear();
                 stack.truncate(depth + 1);
                 stack.push(doc.add_child(stack[depth], String::new()));
@@ -360,7 +351,7 @@ impl Doc {
                 lines.push(&line[strip..]);
             }
         }
-        doc.set_text(*stack.last().expect("nonempty"), lines.join("\n"));
+        doc.set_split(*stack.last().expect("nonempty"), &lines.join("\n"));
         Ok(doc)
     }
 
@@ -368,7 +359,8 @@ impl Doc {
     pub fn check(&self) {
         for (id, seg) in &self.segs {
             assert_eq!(seg.parent.is_none(), *id == self.root);
-            assert!(!seg.text.split('\n').any(is_fork_line), "fork line in {:?}", seg.text);
+            assert_eq!(split_forks(&seg.text).len(), 1, "fork in {:?}", seg.text);
+            assert!(seg.children.is_empty() || !in_comment(&seg.text), "{:?}", seg.text);
             for c in &seg.children {
                 assert_eq!(self.get(*c).parent, Some(*id));
             }

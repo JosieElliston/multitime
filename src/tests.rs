@@ -133,13 +133,38 @@ fn fork_examples() {
     s.go_to(Pos { seg: s.doc().root(), off: 8 });
     s.fork();
     s.twist("F", Normal);
-    assert_eq!(s.doc().to_file(), "F2\n>\n  [R: U D] L\n>\n  R U F\n");
+    assert_eq!(s.doc().to_file(), "F2 \n>\n  [R: U D] L\n>\n  R U F\n");
     let mut s = Session::new(Doc::new("^(A B)"));
     s.go_to(Pos { seg: s.doc().root(), off: 3 });
     s.split();
-    assert_eq!(s.doc().to_file(), "^(A)\n>\n  ^(B)\n");
+    assert_eq!(s.doc().to_file(), "^(A)\n>\n  ^( B)\n");
     s.undo();
     assert_eq!(s.doc().to_file(), "^(A B)\n");
+}
+
+#[test]
+fn forking_beside_a_fork() {
+    // Right beside it, on either side, adds a branch to it.
+    for (text, at) in [("R>U", 1), ("R>U", 2), ("R >U", 1), ("R> U", 3), ("R>", 2), ("R>", 1)] {
+        let mut s = Session::new(Doc::new(text));
+        s.go_to(s.doc().path_pos(s.tip(), at));
+        s.fork();
+        assert_eq!(s.doc().get(s.doc().root()).children.len(), 2, "{text:?} at {at}");
+        assert_eq!(s.doc().ids().count(), 3, "{text:?} at {at}");
+    }
+    // But not from another line.
+    for (text, at, want) in [("R\n>U", 1, "R>\n>U"), ("R>\nU", 3, "R>\n>U"), ("R>\n", 3, "R>\n>")] {
+        let mut s = Session::new(Doc::new(text));
+        s.go_to(s.doc().path_pos(s.tip(), at));
+        s.fork();
+        s.cycle_sibling(-1);
+        let mut tip = s.tip();
+        while let Some(c) = s.doc().get(tip).children.first() {
+            tip = *c;
+        }
+        assert_eq!(s.doc().path_text(tip), want);
+        assert_eq!(s.doc().get(s.doc().root()).children.len(), if at == 1 { 2 } else { 1 });
+    }
 }
 
 /// Edits like an editor would: replace a range of the path text.
@@ -152,36 +177,67 @@ fn replace(s: &mut Session, r: std::ops::Range<usize>, with: &str) {
 
 #[test]
 fn editing_forks() {
-    let mut s = Session::new(Doc::new("R\nU"));
-    replace(&mut s, 1..1, "\n>");
-    assert_eq!(s.doc().path_text(s.tip()), "R\n>\nU");
+    let mut s = Session::new(Doc::new("R U"));
+    replace(&mut s, 1..1, ">");
+    assert_eq!(s.doc().to_file(), "R\n>\n   U\n");
     assert_eq!(s.eval(s.caret()).0, st("R"));
-    // Deleting any one char of the fork joins.
-    for i in 1..4 {
-        let mut s = s.clone();
-        replace(&mut s, i..i + 1, "");
-        assert_eq!(s.doc().to_file(), "R\nU\n");
-    }
-    // Its children join its siblings, in its place.
-    for i in 1..4 {
-        let file = "R\n>\n  A\n>\n  U\n  >\n    F\n  >\n    D\n>\n  B\n";
-        let mut s = Session::new(Doc::from_file(file).unwrap());
-        let u = s.doc().ids().find(|id| s.doc().get(*id).text == "U").unwrap();
-        s.select(u);
-        replace(&mut s, i..i + 1, "");
-        assert_eq!(s.doc().to_file(), "R\nU\n>\n  A\n>\n  F\n>\n  D\n>\n  B\n");
-        assert_eq!(s.caret().off, if i == 1 { 1 } else { 2 });
-        s.undo();
-        assert_eq!(s.doc().to_file(), file);
-    }
-    // A blank line before a fork can be deleted without joining.
-    let mut s = Session::new(Doc::from_file("R\n\n>\n  U\n").unwrap());
     replace(&mut s, 1..2, "");
-    assert_eq!(s.doc().to_file(), "R\n>\n  U\n");
+    assert_eq!(s.doc().to_file(), "R U\n");
+    // Its children join its siblings, in its place.
+    let file = "R\n>\n  A\n>\n  U\n  >\n    F\n  >\n    D\n>\n  B\n";
+    let mut s = Session::new(Doc::from_file(file).unwrap());
+    let u = s.doc().ids().find(|id| s.doc().get(*id).text == "U").unwrap();
+    s.select(u);
+    replace(&mut s, 1..2, "");
+    assert_eq!(s.doc().to_file(), "RU\n>\n  A\n>\n  F\n>\n  D\n>\n  B\n");
+    assert_eq!(s.caret().off, 1);
+    s.undo();
+    assert_eq!(s.doc().to_file(), file);
+    // By tokens, it keeps them separate.
+    for (seg, off, forward) in [(u, 0, false), (s.doc().root(), 1, true)] {
+        let mut s = s.clone();
+        s.go_to(Pos { seg, off });
+        s.delete(forward);
+        assert!(s.doc().to_file().starts_with("R U\n>\n  A\n>\n  F\n"));
+    }
     // Empty segments.
     let mut s = Session::new(Doc::new("R"));
-    replace(&mut s, 1..1, "\n>\n>\nF");
+    replace(&mut s, 1..1, ">>\nF");
     assert_eq!(s.doc().path(s.tip()).len(), 3);
+    assert_eq!(s.doc().path_text(s.tip()), "R>>\nF");
+}
+
+#[test]
+fn forks_in_comments() {
+    let mut s = Session::new(Doc::new("R // a > b\nU>F"));
+    assert_eq!(s.doc().path(s.tip()).len(), 2);
+    // Commenting out a fork, and uncommenting it.
+    replace(&mut s, 12..12, "//");
+    assert_eq!(s.doc().path(s.tip()).len(), 1);
+    replace(&mut s, 12..14, "");
+    assert_eq!(s.doc().path(s.tip()).len(), 2);
+    replace(&mut s, 2..4, "");
+    assert_eq!(s.doc().path_text(s.tip()), "R  a > b\nU>F");
+    assert_eq!(s.doc().path(s.tip()).len(), 3);
+    // It can comment out several.
+    let mut s = Session::new(Doc::new("R>U>F\n>D"));
+    replace(&mut s, 1..1, "//");
+    assert_eq!(s.doc().path_text(s.tip()), "R//>U>F\n>D");
+    assert_eq!(s.doc().path(s.tip()).len(), 2);
+    // Forking from a comment goes after it.
+    let mut s = Session::new(Doc::new("R // hi"));
+    s.fork();
+    s.doc().check();
+    assert_eq!(s.doc().path_text(s.tip()), "R // hi\n>");
+    // Which isn't an extra line in a file.
+    let file = "R // hi\n>\n\n";
+    assert_eq!(s.doc().to_file(), file);
+    assert_eq!(Doc::from_file(file).unwrap(), *s.doc());
+    for text in ["R // hi\n\n", "R\n", "// a\n\n\n"] {
+        let mut s = Session::new(Doc::new(text));
+        s.fork();
+        assert_eq!(Doc::from_file(&s.doc().to_file()).unwrap(), *s.doc());
+    }
 }
 
 #[test]
@@ -190,7 +246,7 @@ fn cut_and_paste_forks() {
     let file = "R U\n>\n  F B\n  >\n    D L\n";
     let s = Session::new(Doc::from_file(file).unwrap());
     let text = s.doc().path_text(s.tip());
-    for (a, b, cut) in [(1, 7, "R B\n>\n  D L\n"), (1, 13, "R L\n"), (0, text.len(), "\n")] {
+    for (a, b, cut) in [(1, 5, "R B\n>\n  D L\n"), (1, 9, "R L\n"), (0, text.len(), "\n")] {
         let mut s = s.clone();
         replace(&mut s, a..b, "");
         assert_eq!(s.doc().to_file(), cut);
@@ -199,7 +255,7 @@ fn cut_and_paste_forks() {
     }
     // A pasted fork splits: the branches now come after it.
     let mut s = Session::new(Doc::from_file("R\n>\n  F\n>\n  D\n").unwrap());
-    replace(&mut s, 1..1, "\n>\nX");
+    replace(&mut s, 1..1, ">X");
     assert_eq!(s.doc().to_file(), "R\n>\n  X\n  >\n    F\n  >\n    D\n");
 }
 
@@ -223,15 +279,15 @@ fn random_editing() {
                     let (a, b) = (a.min(b), if rng.below(2) == 0 { a.min(b) } else { a.max(b) });
                     let mut ins = rng.text(4);
                     if rng.below(3) == 0 {
-                        ins.push_str("\n>\n");
+                        ins.push_str([">", "\n>\n", "//"][rng.below(3)]);
                     }
                     let mut want = text.clone();
                     want.replace_range(a..b, &ins);
                     replace(&mut s, a..b, &ins);
-                    // Pure deletions and insertions away from forks are literal.
-                    if !text.contains('>') && !want.contains('>') {
-                        assert_eq!(s.doc().path_text(s.tip()), want);
-                    }
+                    // Edits are literal, except for ending a comment.
+                    let got = s.doc().path_text(s.tip());
+                    assert_eq!(got.strip_suffix('\n').filter(|t| *t == want).unwrap_or(&got), want);
+                    assert_eq!(s.doc().path_offset(s.tip(), s.caret()), Some(a + ins.len()));
                 }
                 4 => s.split(),
                 5 => s.fork(),
@@ -253,6 +309,8 @@ fn random_editing() {
             assert_eq!(s.doc().path_pos(s.tip(), d), s.caret());
             let file = s.doc().to_file();
             assert_eq!(Doc::from_file(&file).unwrap().to_file(), file);
+            let reread = Session::new(Doc::new(&text));
+            assert_eq!(reread.doc().path_text(reread.tip()), text);
         }
         let end = s.doc().to_file();
         for _ in 0..40 {
@@ -320,15 +378,6 @@ fn delete_leaves_other_tokens() {
         assert!(gone > 0, "{text:?} at {c} -> {new:?}");
         assert!((0..=head).any(|i| old[i + gone..] == new_words[i..]), "{text:?} at {c} -> {new:?}");
     }
-}
-
-#[test]
-fn delete_can_write_a_fork() {
-    let mut s = Session::new(Doc::new("> R"));
-    s.delete(false);
-    s.doc().check();
-    s.undo();
-    assert_eq!(s.doc().path_text(s.tip()), "> R");
 }
 
 #[test]

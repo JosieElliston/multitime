@@ -350,20 +350,19 @@ fn opener(s: &str) -> Option<(GroupKind, usize)> {
     })
 }
 
+/// Space needed between two texts so that their tokens stay separate.
+pub fn padding(before: &str, after: &str) -> &'static str {
+    let left = before.chars().next_back().is_some_and(|c| !c.is_whitespace() && !"([".contains(c));
+    let right = after.chars().next().is_some_and(|c| !c.is_whitespace() && !")],:".contains(c));
+    if left && right { " " } else { "" }
+}
+
 /// Inserts `s` at `at`, adding spaces so it stays a separate token. Returns the
 /// new text and the position right after `s`.
 fn insert_padded(text: &str, at: usize, s: &str) -> (String, usize) {
     let (before, after) = text.split_at(at);
-    let needs_left = before
-        .chars()
-        .next_back()
-        .is_some_and(|c| !c.is_whitespace() && !"([".contains(c));
-    let needs_right = after
-        .chars()
-        .next()
-        .is_some_and(|c| !c.is_whitespace() && !")],:".contains(c));
-    let left = if needs_left { " " } else { "" };
-    let right = if needs_right { " " } else { "" };
+    let left = padding(before, s);
+    let right = padding(s, after);
     let caret = at + left.len() + s.len();
     (format!("{before}{left}{s}{right}{after}"), caret)
 }
@@ -502,16 +501,18 @@ pub struct Cut {
     pub fork: (String, usize),
 }
 
-/// Cuts text at the caret. Inside of `^()` it closes and reopens; inside of any
+/// Cuts text at the caret, or after the comment that it's in. Inside of `^()` it closes and reopens; inside of any
 /// other group it cuts before the group, and `fork` has what had been played.
 pub fn cut(text: &str, caret: usize) -> Cut {
     let mut at = caret;
     let mut p = parse(&text[..at]);
     let mut comment_nl = "";
     if p.in_comment {
-        at = text[at..].find('\n').map_or(text.len(), |n| at + n);
+        match text[at..].find('\n') {
+            Some(n) => at += n + 1,
+            None => (at, comment_nl) = (text.len(), "\n"),
+        }
         p = parse(&text[..at]);
-        comment_nl = "\n";
     }
     let full = parse(text);
 
@@ -525,7 +526,7 @@ pub fn cut(text: &str, caret: usize) -> Cut {
     let cut_group = p.open.get(reopen as usize);
     let cut_at = cut_group.map_or(at, |g| g.span.start);
     if cut_group.is_some() {
-        comment_nl = if parse(text[..cut_at].trim_end_matches(' ')).in_comment { "\n" } else { "" };
+        comment_nl = "";
     }
 
     // Moves played inside of the groups being cut before.
@@ -574,28 +575,21 @@ pub fn cut(text: &str, caret: usize) -> Cut {
             .join("\n");
     }
 
-    let mut left = text[..cut_at].trim_end_matches([' ', '\t']).to_owned();
-    let mut right = text[cut_at..].trim_start_matches([' ', '\t']).to_owned();
+    let mut left = format!("{}{comment_nl}", &text[..cut_at]);
+    let mut right = text[cut_at..].to_owned();
     let niss = p.inversion() == Inversion::Inverse;
     if reopen {
-        left = format!("{left}{comment_nl})");
+        left.push(')');
         if let Some(l) = left.strip_suffix("^()") {
-            left = l.trim_end_matches([' ', '\t']).to_owned();
+            left = l.to_owned();
         }
         // If it never closes, there may be nothing left to play.
         right = format!("^({right}");
         if let Some(r) = right.strip_prefix("^()") {
-            right = r.trim_start_matches([' ', '\t']).to_owned();
-        } else if right == "^(" {
+            right = r.to_owned();
+        } else if right.trim_end() == "^(" {
             right.clear();
         }
-    }
-    // The right half keeps the newline that ended a comment; drop it.
-    if let Some(r) = right.strip_prefix('\n') {
-        right = r.to_owned();
-    }
-    if let Some(l) = left.strip_suffix('\n') {
-        left = l.to_owned();
     }
     let fork = if niss {
         let nl = if parse(&played).in_comment { "\n" } else { "" };

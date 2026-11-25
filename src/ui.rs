@@ -1,6 +1,6 @@
 //! egui front end. Holds only view state; everything else is in `Session`.
 
-use crate::doc::{Doc, FORK, Pos, SegId};
+use crate::doc::{self, Doc, FORK, Pos, SegId};
 use crate::notation::{self, GroupKind, Inversion, TokenKind};
 use crate::puzzle::{self, Perm, STICKERS};
 use crate::session::{InversionMode, Session};
@@ -25,6 +25,12 @@ const CARET: Stroke = Stroke { width: 2.0, color: Color32::WHITE };
 const GHOST_CARET: Stroke = Stroke { width: 2.0, color: Color32::from_gray(130) };
 const EDITOR: &str = "path editor";
 const FONT: FontId = FontId::monospace(15.0);
+/// Width of a `>` in the text box.
+const FORK_MARK: f32 = 18.0;
+/// Width of a fork in the text box: a box around each of its `>`s.
+fn fork_width(count: usize) -> f32 {
+    count as f32 * FORK_MARK + 8.0
+}
 
 struct View {
     mode: InversionMode,
@@ -364,8 +370,12 @@ impl App {
             state.store(ui.ctx(), id);
         }
 
+        let fork_counts: Vec<usize> = {
+            let doc = self.session.doc();
+            doc.path(tip)[1..].iter().map(|s| doc.siblings(*s).len()).collect()
+        };
         let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, width: f32| {
-            let mut job = highlight(buf.as_str());
+            let mut job = highlight(ui, buf.as_str(), &fork_counts);
             job.wrap.max_width = width;
             ui.fonts_mut(|f| f.layout_job(job))
         };
@@ -419,36 +429,7 @@ impl App {
             && (byte(r.primary), byte(r.secondary)) != (caret, anchor)
         {
             let doc = self.session.doc();
-            let mut new = byte(r.primary);
-            // The caret can't rest within a fork. Up and Down (which set `h_pos`)
-            // continue to the next line, and other keys to the end of the fork. The pointer goes to the nearest end, since a held drag
-            // would otherwise flip between the two.
-            let pointer = ui.input(|i| i.pointer.primary_down() || i.pointer.any_released());
-            for (start, seg) in doc.path_starts(tip).into_iter().zip(doc.path(tip)) {
-                let end = start + doc.get(seg).text.len();
-                let next = end + FORK.len();
-                if end < new && new < next && next <= text.len() {
-                    if r.h_pos.is_some() && !pointer {
-                        let (to, h_pos) = if new > caret {
-                            out.galley.cursor_down_one_row(&r.primary, r.h_pos)
-                        } else {
-                            out.galley.cursor_up_one_row(&r.primary, r.h_pos)
-                        };
-                        new = byte(to);
-                        // Keep `h_pos` for the next move.
-                        let mut state = out.state.clone();
-                        let secondary = if r.is_empty() { to } else { r.secondary };
-                        let range = egui::text::CCursorRange { primary: to, secondary, h_pos };
-                        state.cursor.set_char_range(Some(range));
-                        state.store(ui.ctx(), id);
-                        break;
-                    }
-                    let forward = if pointer { new - end >= 2 } else { new > caret };
-                    new = if forward { next } else { end };
-                    break;
-                }
-            }
-            let pos = doc.path_pos(tip, new);
+            let pos = doc.path_pos(tip, byte(r.primary));
             if r.is_empty() {
                 self.session.go_to(pos);
             } else {
@@ -491,8 +472,10 @@ impl App {
         let path = self.session.doc().path(tip);
         let starts = self.session.doc().path_starts(tip);
         for i in 1..path.len() {
-            let mark = text[..starts[i] - 2].chars().count();
-            let rect = out.galley.pos_from_cursor(egui::text::CCursor::new(mark));
+            let index = text[..starts[i] - FORK.len()].chars().count();
+            // If the line wraps at the fork, it's on the next row.
+            let mark = egui::text::CCursor { prefer_next_row: true, ..egui::text::CCursor::new(index) };
+            let rect = out.galley.pos_from_cursor(mark);
             let rect = rect.translate(out.galley_pos.to_vec2());
             let sibs = self.session.doc().siblings(path[i]).to_vec();
             self.fork_marks(ui, rect.left_center(), &sibs, Some(path[i]), &mut clicked, preview);
@@ -515,17 +498,18 @@ impl App {
         clicked: &mut Option<SegId>,
         preview: &mut Option<Pos>,
     ) {
+        let outline = Rect::from_min_size(at - vec2(0.0, 8.5), vec2(fork_width(segs.len()), 17.0));
+        let stroke = Stroke::new(1.0, DIM);
+        let inside = egui::StrokeKind::Inside;
+        ui.painter().rect_stroke(outline.shrink2(vec2(2.0, 0.0)), 5.0, stroke, inside);
         for (i, &seg) in segs.iter().enumerate() {
-            let center = at + vec2(9.0 + 24.0 * i as f32, 0.0);
-            let rect = Rect::from_center_size(center, vec2(20.0, 16.0));
+            let center = at + vec2(4.0 + (i as f32 + 0.5) * FORK_MARK, 0.0);
+            let rect = Rect::from_center_size(center, vec2(FORK_MARK - 2.0, 13.0));
             let r = ui.interact(rect, Id::unique(("fork mark", seg)), Sense::click());
             let is_selected = selected == Some(seg);
             let color = if is_selected { ACCENT } else { DIM };
-            // Covers the real `>`, which isn't transparent when it's selected.
-            let background = ui.visuals().text_edit_bg_color();
-            ui.painter().rect_filled(rect.shrink2(vec2(-1.0, 2.0)), 0.0, background);
             if is_selected || r.hovered() {
-                ui.painter().rect_filled(rect, 4.0, color.gamma_multiply(0.25));
+                ui.painter().rect_filled(rect, 3.0, color.gamma_multiply(0.25));
             }
             ui.painter().text(center, Align2::CENTER_CENTER, ">", FONT, color);
             if r.clicked() && !is_selected {
@@ -835,15 +819,22 @@ fn hover_text(text: &str, off: usize) -> String {
     format!("{}|{}", &text[..off], &text[off..])
 }
 
-/// Colors the text of a path. Fork marks are transparent, since they're painted
-/// along with their siblings.
-fn highlight(text: &str) -> egui::text::LayoutJob {
+/// Colors the text of a path. Leaves room at each fork for it and its siblings,
+/// `fork_counts` of them, which are painted separately.
+fn highlight(ui: &Ui, text: &str, fork_counts: &[usize]) -> egui::text::LayoutJob {
+    let (space, row) = ui.fonts_mut(|f| (f.glyph_width(&FONT, ' '), f.row_height(&FONT)));
     let mut job = egui::text::LayoutJob::default();
-    let mut add = |s: &str, color| job.append(s, 0.0, TextFormat::simple(FONT, color));
-    for (i, seg) in text.split(FORK).enumerate() {
+    let mut add = |s: &str, format| job.append(s, 0.0, format);
+    for (i, seg) in doc::split_forks(text).into_iter().enumerate() {
         if i > 0 {
-            add(FORK, Color32::TRANSPARENT);
+            // A wide space in place of the `>`.
+            let count = fork_counts.get(i - 1).copied().unwrap_or(1);
+            let size = FONT.size * fork_width(count) / space;
+            let mut format = TextFormat::simple(FontId::monospace(size), DIM);
+            format.line_height = Some(row);
+            add(" ", format);
         }
+        let mut add = |s: &str, color| add(s, TextFormat::simple(FONT, color));
         let parsed = notation::parse(seg);
         let mut niss = vec![];
         for t in &parsed.tokens {

@@ -74,7 +74,7 @@ fn looks() {
 fn typing_and_forks() {
     let mut h = harness("");
     click(&mut h, pos2(100.0, 45.0), PointerButton::Primary);
-    typ(&mut h, "R U\n>F");
+    typ(&mut h, "R U>F");
     assert_eq!(file(&h), "R U\n>\n  F\n");
     // Arrow keys cross the fork both ways.
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
@@ -86,7 +86,7 @@ fn typing_and_forks() {
     assert_eq!(file(&h), "R U2\n>\n  x F\n");
     key(&mut h, Modifiers::COMMAND, Key::Enter);
     typ(&mut h, "B");
-    assert!(file(&h).contains(">\n  x\n") && file(&h).contains("B"), "{}", file(&h));
+    assert!(file(&h).contains(">\n  x \n") && file(&h).contains("B"), "{}", file(&h));
     for _ in 0..10 {
         key(&mut h, Modifiers::COMMAND, Key::Z);
     }
@@ -206,7 +206,7 @@ fn escape_cycles_focus() {
 fn selecting_across_forks() {
     // Deleting a selection joins its forks.
     let mut h = harness("R U F\n>\n  D B\n>\n  L\n");
-    // Drag from after `R U` up to after `D`, pausing on the fork line.
+    // Drag from after `R U` up to after `D`, pausing on the fork.
     let button = |pos, pressed| Event::PointerButton {
         pos,
         button: PointerButton::Primary,
@@ -216,11 +216,11 @@ fn selecting_across_forks() {
     h.event(Event::PointerMoved(pos2(50.0, 50.0)));
     h.event(button(pos2(50.0, 50.0), true));
     h.run_steps(1);
-    for pos in [pos2(150.0, 68.0), pos2(32.0, 85.0)] {
+    for pos in [pos2(75.0, 50.0), pos2(117.0, 50.0)] {
         h.event(Event::PointerMoved(pos));
         h.run_steps(4);
     }
-    h.event(button(pos2(32.0, 85.0), false));
+    h.event(button(pos2(117.0, 50.0), false));
     h.run_steps(2);
     key(&mut h, Modifiers::NONE, Key::Backspace);
     let f = file(&h);
@@ -238,7 +238,7 @@ fn text_box_fills_panel() {
     typ(&mut h, "x");
     assert_eq!(file(&h), "R Ux\n>\n  F\n>\n  D\n");
     // The children are inside of the box, but are still clickable.
-    click(&mut h, pos2(57.0, 75.0), PointerButton::Primary);
+    click(&mut h, pos2(51.0, 75.0), PointerButton::Primary);
     assert_eq!(h.state().session.doc().get(h.state().session.tip()).text, "D");
 
     let mut h = harness(&"R\n".repeat(100));
@@ -274,7 +274,7 @@ fn selecting_on_the_timeline() {
     click(&mut h, pos2(84.0, y), PointerButton::Primary);
     h.event(Event::ModifiersChanged(Modifiers::NONE));
     shot(&mut h, "select");
-    assert_eq!(copied(&mut h), " U\n>\nF");
+    assert_eq!(copied(&mut h), " U>F");
 
     // Drag, without Shift.
     let button = |pos, pressed| Event::PointerButton {
@@ -293,7 +293,7 @@ fn selecting_on_the_timeline() {
     h.event(button(pos2(60.0, y), false));
     h.run_steps(2);
     shot(&mut h, "drag");
-    assert_eq!(copied(&mut h), "\n>\nF B");
+    assert_eq!(copied(&mut h), ">F B");
     assert_eq!(file(&h), "R U\n>\n  F B\n>\n  D // é\n");
 }
 
@@ -306,7 +306,7 @@ fn selection_drawn_across_rows() {
     h.event(Event::ModifiersChanged(Modifiers::NONE));
     h.event(Event::PointerMoved(pos2(400.0, 750.0)));
     shot(&mut h, "rows");
-    assert_eq!(copied(&mut h), " U\n>\nD [R:");
+    assert_eq!(copied(&mut h), " U>D [R:");
 }
 
 #[test]
@@ -317,7 +317,7 @@ fn timeline_leaves_focus_alone() {
         click(h, pos2(84.0, 625.0), PointerButton::Primary);
         h.event(Event::ModifiersChanged(Modifiers::NONE));
         h.run_steps(2);
-        assert_eq!(copied(h), " U\n>\nF");
+        assert_eq!(copied(h), " U>F");
     };
     // In a view: keys still twist, which inserts and deselects.
     let mut h = harness("R U\n>\n  F B\n");
@@ -332,7 +332,7 @@ fn timeline_leaves_focus_alone() {
     select(&mut h);
     key(&mut h, Modifiers::NONE, Key::Escape);
     key(&mut h, Modifiers::NONE, Key::Escape);
-    assert_eq!(copied(&mut h), " U\n>\nF");
+    assert_eq!(copied(&mut h), " U>F");
     // In the text box: typing replaces it.
     select(&mut h);
     typ(&mut h, "x");
@@ -363,7 +363,7 @@ fn clipboard_while_twisting() {
     key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
     key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
     key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
-    assert_eq!(copied(&mut h), " U\n>\nF");
+    assert_eq!(copied(&mut h), " U>F");
     h.event(Event::Cut);
     h.run_steps(3);
     assert_eq!(file(&h), "R B\n");
@@ -417,31 +417,31 @@ fn editing_by_tokens() {
 
 #[test]
 fn typing_a_fork() {
-    let mut h = harness("R U\n>\n  F\n>\n  D\n");
-    for _ in 0..2 {
-        key(&mut h, Modifiers::NONE, Key::Escape); // to the text box
-    }
-    for _ in 0..2 {
-        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
-    }
-    // Ordinary text unless it's alone on its line.
-    typ(&mut h, " >");
-    assert_eq!(file(&h), "R U >\n>\n  F\n>\n  D\n");
-    for _ in 0..2 {
-        key(&mut h, Modifiers::NONE, Key::Backspace);
-    }
+    let start = |file| {
+        let mut h = harness(file);
+        for _ in 0..2 {
+            key(&mut h, Modifiers::NONE, Key::Escape); // to the text box
+        }
+        for _ in 0..2 {
+            key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+        }
+        h
+    };
     // At the end of a segment, the branches come after it.
-    typ(&mut h, "\n>x");
+    let mut h = start("R U\n>\n  F\n>\n  D\n");
+    typ(&mut h, ">x");
     assert_eq!(file(&h), "R U\n>\n  x\n  >\n    F\n  >\n    D\n");
-    // In the middle of one.
-    let mut h = harness("R U\n");
-    for _ in 0..2 {
-        key(&mut h, Modifiers::NONE, Key::Escape);
-    }
+    // Ordinary text in a comment. Line breaks around it are kept.
+    let mut h = start("R U\n>\n  F\n>\n  D\n");
+    typ(&mut h, "\n\n");
     for _ in 0..2 {
         key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     }
-    typ(&mut h, "\n>\n");
+    typ(&mut h, " // >");
+    assert_eq!(file(&h), "R U // >\n\n\n>\n  F\n>\n  D\n");
+    // In the middle of one.
+    let mut h = start("R U\n");
+    typ(&mut h, ">");
     assert_eq!(file(&h), "R\n>\n   U\n");
 }
 
@@ -461,11 +461,11 @@ fn dragging_into_a_branch() {
     h.run_steps(1);
     // Far past the end of each row, and then back within the root.
     for (to, want) in [
-        (pos2(300.0, 680.0), "R\n>\nL U"),
-        (pos2(300.0, 650.0), "R\n>\nD"),
-        (pos2(300.0, 625.0), "R\n>\nF B"),
+        (pos2(300.0, 680.0), "R>L U"),
+        (pos2(300.0, 650.0), "R>D"),
+        (pos2(300.0, 625.0), "R>F B"),
         (pos2(47.0, 675.0), "R"),
-        (pos2(300.0, 655.0), "R\n>\nD"),
+        (pos2(300.0, 655.0), "R>D"),
     ] {
         h.event(Event::PointerMoved(to));
         h.run_steps(2);
@@ -479,7 +479,7 @@ fn dragging_into_a_branch() {
     h.run_steps(1);
     h.event(Event::PointerMoved(pos2(36.0, 640.0)));
     h.run_steps(2);
-    assert_eq!(copied(&mut h).split_once('\n').unwrap().0, "R");
+    assert_eq!(copied(&mut h).split_once('>').unwrap().0, "R");
     assert_eq!(h.state().session.doc().get(h.state().session.tip()).text, "L U");
     h.event(button(pos2(36.0, 640.0), false));
     h.run_steps(2);
@@ -504,30 +504,38 @@ fn hovering_text() {
 }
 
 #[test]
-fn forks_are_line_breaks() {
+fn forks_are_characters() {
     let mut h = harness("R U F\n>\n  D B L\n>\n  L\n");
     let caret = |h: &Harness<'_, App>| {
         let s = &h.state().session;
         (s.doc().get(s.caret().seg).text.clone(), s.caret().off)
     };
     click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
-    // Up and Down skip the fork and keep the column.
-    key(&mut h, Modifiers::NONE, Key::ArrowUp);
-    assert_eq!(caret(&h), ("R U F".to_owned(), 5));
-    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
-    key(&mut h, Modifiers::NONE, Key::ArrowDown);
-    assert_eq!(caret(&h), ("D B L".to_owned(), 4));
-    key(&mut h, Modifiers::SHIFT, Key::ArrowUp);
-    assert_eq!(caret(&h), ("R U F".to_owned(), 4));
-    assert_eq!(copied(&mut h), "F\n>\nD B ");
-    // Backspace at the start of a branch merges it.
-    key(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(caret(&h), ("D B L".to_owned(), 5));
     for _ in 0..5 {
         key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     }
-    while caret(&h) != ("D B L".to_owned(), 0) {
-        key(&mut h, Modifiers::NONE, Key::ArrowRight);
-    }
+    assert_eq!(caret(&h), ("D B L".to_owned(), 0));
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(caret(&h), ("R U F".to_owned(), 5));
+    key(&mut h, Modifiers::SHIFT, Key::ArrowRight);
+    assert_eq!(copied(&mut h), ">");
+    shot(&mut h, "inline");
+    // Its siblings are beside it.
+    click(&mut h, pos2(96.0, 50.0), PointerButton::Primary);
+    assert_eq!(caret(&h), ("L".to_owned(), 1));
+    // Backspace merges it.
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     key(&mut h, Modifiers::NONE, Key::Backspace);
-    assert_eq!(file(&h), "R U F\nD B L\n>\n  L\n");
+    assert_eq!(file(&h), "R U FL\n>\n  D B L\n");
+}
+
+#[test]
+fn forks_wrap() {
+    let long = "R U F D ".repeat(30);
+    let mut h = harness(&format!("{long}\n>\n  F\n  >\n    {long}\n  >\n    D\n>\n  D\n"));
+    shot(&mut h, "wrap");
+    // Adjacent forks.
+    let mut h = harness("R\n>\n\n  >\n    U\n  >\n    D\n>\n  F\n>\n  B\n");
+    shot(&mut h, "adjacent");
 }
