@@ -317,3 +317,23 @@ fn delete_can_write_a_fork() {
     s.undo();
     assert_eq!(s.doc().path_text(s.tip()), "> R");
 }
+
+#[test]
+fn gaps() {
+    let mut rng = Rng(555);
+    for _ in 0..20_000 {
+        let text = rng.text(14);
+        let n = parse(&text).tokens.len();
+        for g in 0..=n {
+            assert_eq!(gap(&text, gap_offset(&text, g)), (g, false), "{text:?}");
+        }
+        // Stepping visits each gap once, both ways.
+        let mut s = Session::new(Doc::new(&text));
+        for (forward, want) in [(false, 0), (true, n)] {
+            for _ in 0..n {
+                s.step(forward, false);
+            }
+            assert_eq!(gap(&text, s.caret().off), (want, false), "{text:?}");
+        }
+    }
+}

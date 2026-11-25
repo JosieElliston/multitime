@@ -156,29 +156,36 @@ impl Session {
         }
     }
 
-    /// The caret moved by one token along the path. Entering a fork counts.
+    /// The caret moved to the next gap between tokens on the path. A fork
+    /// counts as a token.
     fn stepped(&self, forward: bool) -> Pos {
         let path = self.doc.path(self.tip);
-        let i = path.iter().position(|s| *s == self.caret.seg).expect("caret on path");
-        let tokens = notation::parse(&self.doc.get(self.caret.seg).text).tokens;
-        let mut stops = tokens.iter().map(|t| t.span.end);
-        let off = if forward {
-            stops.find(|s| *s > self.caret.off)
-        } else {
-            let prev = stops.rfind(|s| *s < self.caret.off);
-            prev.or((self.caret.off > 0).then_some(0))
-        };
-        if let Some(off) = off {
-            Pos { off, ..self.caret }
-        } else if forward && i + 1 < path.len() {
-            Pos { seg: path[i + 1], off: 0 }
-        } else if !forward && i > 0 {
-            self.doc.end(path[i - 1])
+        let seg = self.caret.seg;
+        let i = path.iter().position(|s| *s == seg).expect("caret on path");
+        let text = &self.doc.get(seg).text;
+        let (gap, partway) = notation::gap(text, self.caret.off);
+        let at = |gap| Pos { seg, off: notation::gap_offset(text, gap) };
+        if forward {
+            if gap < notation::parse(text).tokens.len() {
+                at(gap + 1)
+            } else if let Some(&next) = path.get(i + 1) {
+                Pos { seg: next, off: 0 }
+            } else {
+                self.caret
+            }
+        } else if partway {
+            at(gap)
+        } else if gap > 0 {
+            at(gap - 1)
+        } else if i > 0 {
+            let seg = path[i - 1];
+            let text = &self.doc.get(seg).text;
+            let last = notation::parse(text).tokens.len();
+            Pos { seg, off: notation::gap_offset(text, last) }
         } else {
             self.caret
         }
     }
-
     /// Moves the caret, or just its end of the selection if `extend`.
     pub fn move_caret(&mut self, pos: Pos, extend: bool) {
         if extend {

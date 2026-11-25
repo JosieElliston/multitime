@@ -161,8 +161,8 @@ fn hyperspeedcube_keys() {
 fn undo_while_previewing() {
     let mut h = harness("R U F");
     key(&mut h, Modifiers::COMMAND, Key::Enter); // an empty child
-    // Its end: the root is 4 stops long, then a gap and the child.
-    let pos = pos2(36.0 + 12.0 * 6.0, 625.0);
+    // Its start: the root is 3 cells long, then the fork.
+    let pos = pos2(36.0 + 12.0 * 4.0, 625.0);
     h.event(Event::PointerMoved(pos));
     h.run_steps(3);
     key(&mut h, Modifiers::COMMAND, Key::Z);
@@ -263,15 +263,15 @@ fn copied(h: &mut Harness<'_, App>) -> String {
 
 #[test]
 fn selecting_on_the_map() {
-    // Dots are 12 apart. R U are at 48 and 60, then the end at 72. F and B are
-    // at 96 and 108.
+    // Cells are 12 wide. The gaps around R U are at 36, 48 and 60, and the ones
+    // around F B are at 72, 84 and 96.
     let mut h = harness("R U\n>\n  F B\n>\n  D // é\n");
     let y = 625.0;
     // Shift+click extends from the caret, across the fork.
     click(&mut h, pos2(48.0, y), PointerButton::Primary);
     assert_eq!(copied(&mut h), "");
     h.event(Event::ModifiersChanged(Modifiers::SHIFT));
-    click(&mut h, pos2(96.0, y), PointerButton::Primary);
+    click(&mut h, pos2(84.0, y), PointerButton::Primary);
     h.event(Event::ModifiersChanged(Modifiers::NONE));
     shot(&mut h, "select");
     assert_eq!(copied(&mut h), " U\nF");
@@ -283,10 +283,10 @@ fn selecting_on_the_map() {
         pressed,
         modifiers: Modifiers::NONE,
     };
-    h.event(Event::PointerMoved(pos2(108.0, y)));
-    h.event(button(pos2(108.0, y), true));
+    h.event(Event::PointerMoved(pos2(96.0, y)));
+    h.event(button(pos2(96.0, y), true));
     h.run_steps(1);
-    for x in [100.0, 90.0, 60.0] {
+    for x in [90.0, 80.0, 60.0] {
         h.event(Event::PointerMoved(pos2(x, y)));
         h.run_steps(2);
     }
@@ -300,7 +300,7 @@ fn selecting_on_the_map() {
 #[test]
 fn selection_drawn_across_rows() {
     let mut h = harness("R U\n>\n  F B\n>\n  D [R: U2] L\n");
-    click(&mut h, pos2(132.0, 651.0), PointerButton::Primary);
+    click(&mut h, pos2(120.0, 651.0), PointerButton::Primary);
     h.event(Event::ModifiersChanged(Modifiers::SHIFT));
     click(&mut h, pos2(48.0, 625.0), PointerButton::Primary);
     h.event(Event::ModifiersChanged(Modifiers::NONE));
@@ -314,7 +314,7 @@ fn map_leaves_focus_alone() {
     let select = |h: &mut Harness<'_, App>| {
         click(h, pos2(48.0, 625.0), PointerButton::Primary);
         h.event(Event::ModifiersChanged(Modifiers::SHIFT));
-        click(h, pos2(96.0, 625.0), PointerButton::Primary);
+        click(h, pos2(84.0, 625.0), PointerButton::Primary);
         h.event(Event::ModifiersChanged(Modifiers::NONE));
         h.run_steps(2);
         assert_eq!(copied(h), " U\nF");
@@ -344,7 +344,7 @@ fn clipboard_while_twisting() {
     let mut h = harness("R U\n>\n  F B\n");
     click(&mut h, pos2(48.0, 625.0), PointerButton::Primary);
     h.event(Event::ModifiersChanged(Modifiers::SHIFT));
-    click(&mut h, pos2(96.0, 625.0), PointerButton::Primary);
+    click(&mut h, pos2(84.0, 625.0), PointerButton::Primary);
     h.event(Event::ModifiersChanged(Modifiers::NONE));
     h.run_steps(1);
     h.event(Event::Cut);
@@ -420,7 +420,7 @@ fn typing_a_fork() {
 
 #[test]
 fn dragging_into_a_branch() {
-    // R is at 48, the fork is at 60, and F and B are at 84 and (if it's there) 96.
+    // R ends at 48, then the branches start at 60.
     let mut h = harness("R\n>\n  F B\n>\n  D\n>\n  L U\n");
     let button = |pos, pressed| Event::PointerButton {
         pos,

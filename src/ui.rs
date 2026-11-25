@@ -6,7 +6,7 @@ use crate::puzzle::{self, Perm, STICKERS};
 use crate::session::{InversionMode, Session};
 use eframe::egui::{
     self, Align2, Color32, Event, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke,
-    TextFormat, Ui, Vec2, pos2, vec2,
+    TextFormat, Ui, pos2, vec2,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -586,6 +586,8 @@ impl App {
 
     // ---- map ----
 
+    /// Draws each path like a line of text with a cell per token and per fork.
+    /// The caret goes between cells.
     fn map(&mut self, ui: &mut Ui, preview: &mut Option<Pos>) {
         const ROW: f32 = 26.0;
         struct Node {
@@ -602,7 +604,7 @@ impl App {
             out: &mut BTreeMap<SegId, Node>,
         ) {
             let n = notation::parse(&doc.get(seg).text).tokens.len();
-            let len = (n + 1) as f32 * MAP_STEP;
+            let len = n as f32 * MAP_STEP;
             out.insert(seg, Node { x, row, len });
             for (i, &c) in doc.get(seg).children.iter().enumerate() {
                 let row = if i == 0 {
@@ -648,6 +650,7 @@ impl App {
                     let band = Rect::from_min_max(at(node, x0) - half, at(node, x1) + half);
                     painter.rect_filled(band, 0.0, fill);
                     if i > a.0 {
+                        // The fork's cell.
                         let p = &nodes[&path[i - 1]];
                         let (from, to) = (at(p, p.len), at(node, 0.0));
                         let v = Rect::from_two_pos(from, pos2(from.x, to.y));
@@ -664,20 +667,26 @@ impl App {
                 let line = Stroke::new(if on_path { 2.0 } else { 1.0 }, color.gamma_multiply(0.6));
                 let (start, end) = (at(node, 0.0), at(node, node.len));
                 painter.line_segment([start, end], line);
-                if let Some(p) = doc.get(seg).parent {
-                    let p = &nodes[&p];
-                    let from = at(p, p.len);
-                    let corner = pos2(from.x, start.y);
-                    painter.add(Shape::line(vec![from, corner, start], line));
-                }
-                let stop = Rect::from_center_size(end, Vec2::splat(7.0));
-                painter.rect_filled(stop, 1.0, color);
                 let s = doc.get(seg);
                 stops.push((start, Pos { seg, off: 0 }));
                 let tokens = notation::parse(&s.text).tokens;
+                if let Some(parent) = s.parent {
+                    let p = &nodes[&parent];
+                    let from = at(p, p.len);
+                    let corner = pos2(from.x, start.y);
+                    painter.line_segment([from, corner], line);
+                    let mark = [vec2(3.0, -4.0), vec2(10.0, 0.0), vec2(3.0, 4.0)];
+                    let points = mark.iter().map(|v| corner + *v).collect();
+                    painter.add(Shape::convex_polygon(points, color, Stroke::NONE));
+                    // The near edge of the fork's cell is the parent's end.
+                    let text = &doc.get(parent).text;
+                    let last = notation::parse(text).tokens.len();
+                    let off = notation::gap_offset(text, last);
+                    stops.push((corner, Pos { seg: parent, off }));
+                }
                 let mut open_xs = vec![];
                 for (i, t) in tokens.iter().enumerate() {
-                    let c = at(node, (i + 1) as f32 * MAP_STEP);
+                    let c = at(node, (i as f32 + 0.5) * MAP_STEP);
                     let col = token_color(t.kind).gamma_multiply(if on_path { 1.0 } else { 0.55 });
                     match t.kind {
                         TokenKind::Open => {
@@ -704,9 +713,9 @@ impl App {
                             painter.circle_filled(c, 4.0, col);
                         }
                     }
-                    stops.push((c, Pos { seg, off: t.span.end }));
+                    let right = c + vec2(MAP_STEP / 2.0, 0.0);
+                    stops.push((right, Pos { seg, off: t.span.end }));
                 }
-                stops.push((end, Pos { seg, off: s.text.len() }));
             }
             let paint_caret = |pos: Pos, stroke| {
                 let c = at(&nodes[&pos.seg], map_x(&doc.get(pos.seg).text, pos.off));
@@ -790,18 +799,14 @@ impl App {
     }
 }
 
-/// Distance between dots on the map.
+/// Width of a cell on the map.
 const MAP_STEP: f32 = 12.0;
 
 /// How far along its segment an offset is on the map.
+/// Inverse of `notation::gap_offset`, except within tokens and whitespace.
 fn map_x(text: &str, off: usize) -> f32 {
-    let tokens = notation::parse(text).tokens;
-    if off == text.len() {
-        return (tokens.len() + 1) as f32 * MAP_STEP;
-    }
-    let done = tokens.iter().filter(|t| t.span.end <= off).count();
-    let partway = tokens.iter().any(|t| t.span.start < off && off < t.span.end);
-    (done as f32 + if partway { 0.5 } else { 0.0 }) * MAP_STEP
+    let (gap, partway) = notation::gap(text, off);
+    (gap as f32 + if partway { 0.5 } else { 0.0 }) * MAP_STEP
 }
 
 fn hover_text(text: &str, off: usize) -> String {

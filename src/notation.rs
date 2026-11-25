@@ -421,6 +421,23 @@ fn splice_line(text: &str, at: usize, s: &str) -> (String, usize) {
     (new, at + 1 + s.len())
 }
 
+/// Which gap between tokens a position is in: the number of tokens before it.
+/// All of the whitespace between two tokens is one gap. The second value is
+/// whether it's actually partway through the next token.
+pub fn gap(text: &str, off: usize) -> (usize, bool) {
+    let tokens = parse(text).tokens;
+    let n = tokens.iter().take_while(|t| t.span.end <= off).count();
+    (n, tokens.get(n).is_some_and(|t| t.span.start < off))
+}
+
+/// Canonical position of a gap: right after the token before it.
+pub fn gap_offset(text: &str, gap: usize) -> usize {
+    match gap.checked_sub(1) {
+        Some(i) => parse(text).tokens[i].span.end,
+        None => 0,
+    }
+}
+
 /// Span of the whole group that a bracket or separator belongs to, or just the
 /// token's own span if it's anything else (or the group never closes).
 fn deletion_span(text: &str, tokens: &[Token], index: usize) -> Range<usize> {
