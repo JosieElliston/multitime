@@ -207,11 +207,9 @@ impl Session {
         self.move_caret(pos, extend);
     }
 
-    /// Deletes the selection, or else one token. A token deletion stops at
-    /// forks.
+    /// Deletes the selection, or else one token. A fork counts as a token.
     pub fn delete(&mut self, forward: bool) {
-        let offset = |pos| self.doc.path_offset(self.tip, pos).expect("on path");
-        let (a, c) = (offset(self.anchor()), offset(self.caret));
+        let (a, c) = (self.offset(self.anchor()), self.offset(self.caret));
         let mut text = self.doc.path_text(self.tip);
         let caret = if a != c {
             text.replace_range(a.min(c)..a.max(c), "");
@@ -219,6 +217,7 @@ impl Session {
         } else {
             let seg = &self.doc.get(self.caret.seg).text;
             let Some((new, off)) = notation::delete(seg, self.caret.off, forward) else {
+                self.delete_fork(forward);
                 return;
             };
             let start = c - self.caret.off;
@@ -229,6 +228,42 @@ impl Session {
         self.typing = None;
         self.edit(&text, caret);
         self.typing = None;
+    }
+    fn delete_fork(&mut self, forward: bool) {
+        let path = self.doc.path(self.tip);
+        let i = path.iter().position(|s| *s == self.caret.seg).expect("caret on path");
+        if !forward {
+            self.join();
+        } else if let Some(&next) = path.get(i + 1) {
+            self.join_segment(next);
+        }
+    }
+
+    /// Types a `>`: replaces the selection with a fork. Returns false if it's an
+    /// ordinary character instead, because it's in a comment.
+    pub fn type_fork(&mut self) -> bool {
+        let start = if self.offset(self.anchor()) < self.offset(self.caret) {
+            self.anchor()
+        } else {
+            self.caret
+        };
+        if notation::parse(&self.doc.get(start.seg).text[..start.off]).in_comment {
+            return false;
+        }
+        let before = self.snapshot();
+        let undo = self.undo.len();
+        if self.anchor.is_some() {
+            self.delete(true);
+        }
+        self.undo.truncate(undo); // one step
+        self.caret = self.doc.fork(self.caret);
+        self.tip = self.caret.seg;
+        self.record(before);
+        true
+    }
+    /// Offset in the path's text.
+    fn offset(&self, pos: Pos) -> usize {
+        self.doc.path_offset(self.tip, pos).expect("on path")
     }
 
     pub fn twist(&mut self, mv: &str, inversion: Inversion) {
@@ -277,10 +312,14 @@ impl Session {
     }
     /// Joins the caret's segment to its parent.
     pub fn join(&mut self) {
+        self.join_segment(self.caret.seg);
+    }
+    fn join_segment(&mut self, seg: SegId) {
         let before = self.snapshot();
-        let seg = self.caret.seg;
         if let Some(start) = self.doc.join(seg) {
-            self.caret = Pos { seg: start.seg, off: start.off + self.caret.off };
+            if self.caret.seg == seg {
+                self.caret = Pos { seg: start.seg, off: start.off + self.caret.off };
+            }
             if self.tip == seg {
                 self.tip = start.seg;
             }

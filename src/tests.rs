@@ -154,32 +154,26 @@ fn replace(s: &mut Session, r: std::ops::Range<usize>, with: &str) {
 fn editing_forks() {
     let mut s = Session::new(Doc::new("R\nU"));
     replace(&mut s, 1..1, "\n>");
-    // Writing a `>` forks, and what came after it is the other branch.
-    assert_eq!(s.doc().to_file(), "R\n>\n  U\n>\n\n");
-    assert_eq!(s.doc().path_text(s.tip()), "R\n>\n");
-    assert_eq!(s.eval(s.caret()).0, st("R"));
-    s.undo();
-    s.go_to(Pos { seg: s.doc().root(), off: 1 });
-    s.split();
     assert_eq!(s.doc().path_text(s.tip()), "R\n>\nU");
+    assert_eq!(s.eval(s.caret()).0, st("R"));
     // Deleting any one char of the fork joins.
     for i in 1..4 {
         let mut s = s.clone();
         replace(&mut s, i..i + 1, "");
         assert_eq!(s.doc().to_file(), "R\nU\n");
     }
-    // Unless it has siblings.
-    let root = s.doc().root();
-    s.go_to(s.doc().end(root));
-    s.fork();
-    s.cycle_sibling(1);
-    let before = s.doc().clone();
+    // Its children join its siblings, in its place.
     for i in 1..4 {
+        let file = "R\n>\n  A\n>\n  U\n  >\n    F\n  >\n    D\n>\n  B\n";
+        let mut s = Session::new(Doc::from_file(file).unwrap());
+        let u = s.doc().ids().find(|id| s.doc().get(*id).text == "U").unwrap();
+        s.select(u);
         replace(&mut s, i..i + 1, "");
-        assert_eq!(*s.doc(), before);
+        assert_eq!(s.doc().to_file(), "R\nU\n>\n  A\n>\n  F\n>\n  D\n>\n  B\n");
+        assert_eq!(s.caret().off, if i == 1 { 1 } else { 2 });
+        s.undo();
+        assert_eq!(s.doc().to_file(), file);
     }
-    replace(&mut s, 0..5, "F");
-    assert_eq!(s.doc().path_text(s.tip()), "F\n>\n");
     // A blank line before a fork can be deleted without joining.
     let mut s = Session::new(Doc::from_file("R\n\n>\n  U\n").unwrap());
     replace(&mut s, 1..2, "");
@@ -224,6 +218,16 @@ fn random_editing() {
                 5 => s.fork(),
                 6 => s.join(),
                 7 => s.twist("R", Normal),
+                8 if rng.below(3) == 0 => {
+                    let before = s.doc().to_file();
+                    if s.type_fork() {
+                        let after = s.doc().to_file();
+                        s.undo();
+                        assert_eq!(s.doc().to_file(), before);
+                        s.redo();
+                        assert_eq!(s.doc().to_file(), after);
+                    }
+                }
                 8 => {
                     s.step(rng.below(2) == 0, rng.below(2) == 0);
                     s.delete(rng.below(2) == 0);

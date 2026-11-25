@@ -65,6 +65,8 @@ pub struct App {
     /// A key was pressed since the pointer last moved. Otherwise a pointer
     /// resting on the text box would hide what's being typed.
     ignore_hover: bool,
+    /// Input held back until the text box has handled what came before it.
+    deferred: Vec<Event>,
 }
 
 impl eframe::App for App {
@@ -133,6 +135,7 @@ impl App {
             keys: Keys::Twist(0),
             preview: None,
             ignore_hover: false,
+            deferred: vec![],
         }
     }
 
@@ -185,7 +188,34 @@ impl App {
         doc.ids().any(|s| s == p.seg) && doc.get(p.seg).text.is_char_boundary(p.off)
     }
 
+    /// Takes typed `>`s, which fork. The text box has to handle whatever was
+    /// typed earlier in the frame first, so the rest waits for the next frame.
+    fn typed_forks(&mut self, ui: &mut Ui) {
+        let mut events = std::mem::take(&mut self.deferred);
+        ui.input_mut(|i| events.append(&mut i.events));
+        if self.keys == Keys::Type {
+            while let Some(i) = events.iter().position(|e| *e == Event::Text(">".to_owned())) {
+                if i > 0 {
+                    self.deferred = events.split_off(i);
+                    ui.ctx().request_repaint();
+                    break;
+                }
+                if !self.session.type_fork() {
+                    // An ordinary character. Later ones still have to wait.
+                    self.deferred = events.split_off(1);
+                    if !self.deferred.is_empty() {
+                        ui.ctx().request_repaint();
+                    }
+                    break;
+                }
+                events.remove(0);
+            }
+        }
+        ui.input_mut(|i| i.events = events);
+    }
+
     fn shortcuts(&mut self, ui: &mut Ui) {
+        self.typed_forks(ui);
         let key = |m, k| ui.input_mut(|i| i.consume_key(m, k));
         let (cmd, shift) = (Modifiers::COMMAND, Modifiers::SHIFT);
         let s = &mut self.session;
@@ -298,6 +328,7 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             let s = &mut self.session;
             let seg = s.caret().seg;
+            let has_parent = s.doc().get(seg).parent.is_some();
             let button = |ui: &mut Ui, enabled, text: &str, hint: &str| {
                 ui.add_enabled(enabled, egui::Button::new(text)).on_hover_text(hint).clicked()
             };
@@ -307,10 +338,9 @@ impl App {
             if button(ui, true, "Split", "Break the segment at the caret (Cmd+D)") {
                 s.split();
             }
-            if button(ui, s.doc().can_join(seg), "Join", "Merge into the parent (Cmd+J)") {
+            if button(ui, has_parent, "Join", "Merge into the parent (Cmd+J)") {
                 s.join();
             }
-            let has_parent = s.doc().get(seg).parent.is_some();
             if button(ui, has_parent, "Delete branch", "Delete this segment and all after it") {
                 s.delete_branch();
             }
@@ -418,14 +448,29 @@ impl App {
         {
             let doc = self.session.doc();
             let mut new = byte(r.primary);
-            // The caret can't rest within a fork. Keys cross it in the direction
-            // of motion. The pointer goes to the nearest end, since a held drag
+            // The caret can't rest within a fork. Up and Down (which set `h_pos`)
+            // continue to the next line, and other keys to the end of the fork. The pointer goes to the nearest end, since a held drag
             // would otherwise flip between the two.
             let pointer = ui.input(|i| i.pointer.primary_down() || i.pointer.any_released());
             for (start, seg) in doc.path_starts(tip).into_iter().zip(doc.path(tip)) {
                 let end = start + doc.get(seg).text.len();
                 let next = end + FORK.len();
                 if end < new && new < next && next <= text.len() {
+                    if r.h_pos.is_some() && !pointer {
+                        let (to, h_pos) = if new > caret {
+                            out.galley.cursor_down_one_row(&r.primary, r.h_pos)
+                        } else {
+                            out.galley.cursor_up_one_row(&r.primary, r.h_pos)
+                        };
+                        new = byte(to);
+                        // Keep `h_pos` for the next move.
+                        let mut state = out.state.clone();
+                        let secondary = if r.is_empty() { to } else { r.secondary };
+                        let range = egui::text::CCursorRange { primary: to, secondary, h_pos };
+                        state.cursor.set_char_range(Some(range));
+                        state.store(ui.ctx(), id);
+                        break;
+                    }
                     let forward = if pointer { new - end >= 2 } else { new > caret };
                     new = if forward { next } else { end };
                     break;

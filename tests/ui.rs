@@ -74,7 +74,7 @@ fn looks() {
 fn typing_and_forks() {
     let mut h = harness("");
     click(&mut h, pos2(100.0, 45.0), PointerButton::Primary);
-    typ(&mut h, "R U\n>F"); // the `>` starts the new segment by itself
+    typ(&mut h, "R U>F");
     assert_eq!(file(&h), "R U\n>\n  F\n");
     // Arrow keys cross the fork both ways.
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
@@ -204,7 +204,7 @@ fn escape_cycles_focus() {
 
 #[test]
 fn selecting_across_forks() {
-    // Deleting a selection keeps the fork, which has siblings.
+    // Deleting a selection joins its forks.
     let mut h = harness("R U F\n>\n  D B\n>\n  L\n");
     // Drag from after `R U` up to after `D`, pausing on the fork line.
     let button = |pos, pressed| Event::PointerButton {
@@ -224,7 +224,7 @@ fn selecting_across_forks() {
     h.run_steps(2);
     key(&mut h, Modifiers::NONE, Key::Backspace);
     let f = file(&h);
-    assert!(f.starts_with("R U\n>\n   B\n>\n"), "{f:?}");
+    assert!(f == "R U B\n>\n  L\n", "{f:?}");
 }
 
 #[test]
@@ -377,12 +377,12 @@ fn editing_by_tokens() {
     key(&mut h, Modifiers::NONE, Key::Backspace);
     key(&mut h, Modifiers::NONE, Key::Backspace);
     assert_eq!(file(&h), "R U2\n>\n  F'\n");
-    // Stops at the fork.
-    for _ in 0..3 {
-        key(&mut h, Modifiers::NONE, Key::Backspace);
-    }
+    key(&mut h, Modifiers::NONE, Key::Backspace);
     assert_eq!(file(&h), "R U2\n>\n\n");
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "R U2\n");
     // Each is its own undo step.
+    key(&mut h, Modifiers::COMMAND, Key::Z);
     key(&mut h, Modifiers::COMMAND, Key::Z);
     assert_eq!(file(&h), "R U2\n>\n  F'\n");
     key(&mut h, Modifiers::NONE, Key::Home);
@@ -408,13 +408,13 @@ fn typing_a_fork() {
         key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     }
     // At the end of a segment with children, it's a new child.
-    typ(&mut h, "\n>D");
+    typ(&mut h, ">D");
     assert_eq!(file(&h), "R U\n>\n  F\n>\n  D\n");
     // In the middle of one, the rest becomes the other branch.
     for _ in 0..4 {
         key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     }
-    typ(&mut h, "\n>\nB");
+    typ(&mut h, ">B");
     assert_eq!(file(&h), "R\n>\n  U\n  >\n    F\n  >\n    D\n>\n  B\n");
 }
 
@@ -474,4 +474,39 @@ fn hovering_text() {
     h.event(Event::PointerMoved(pos2(60.0, 50.0)));
     h.run_steps(3);
     assert!(h.query_all_by_label("preview").count() > 0);
+}
+
+#[test]
+fn forks_are_line_breaks() {
+    let mut h = harness("R U F\n>\n  D B L\n>\n  L\n");
+    let caret = |h: &Harness<'_, App>| {
+        let s = &h.state().session;
+        (s.doc().get(s.caret().seg).text.clone(), s.caret().off)
+    };
+    click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
+    // Up and Down skip the fork and keep the column.
+    key(&mut h, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(caret(&h), ("R U F".to_owned(), 5));
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    key(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(caret(&h), ("D B L".to_owned(), 4));
+    key(&mut h, Modifiers::SHIFT, Key::ArrowUp);
+    assert_eq!(caret(&h), ("R U F".to_owned(), 4));
+    assert_eq!(copied(&mut h), "F\nD B ");
+    // Backspace at the start of a branch merges it.
+    key(&mut h, Modifiers::NONE, Key::ArrowDown);
+    for _ in 0..5 {
+        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    }
+    while caret(&h) != ("D B L".to_owned(), 0) {
+        key(&mut h, Modifiers::NONE, Key::ArrowRight);
+    }
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "R U F\nD B L\n>\n  L\n");
+    // Typed in the same frame, in order.
+    for c in ["x", ">", "y", ">", "/", "/", ">"] {
+        h.event(Event::Text(c.to_owned()));
+    }
+    h.run_steps(10);
+    assert_eq!(file(&h), "R U F\nx\n>\n  D B L\n  >\n    L\n>\n  y\n  >\n    //>\n");
 }

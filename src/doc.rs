@@ -200,23 +200,17 @@ impl Doc {
         Pos { seg: self.add_child(at, text), off }
     }
 
-    pub fn can_join(&self, id: SegId) -> bool {
-        self.get(id).parent.is_some() && self.siblings(id).len() == 1
-    }
-
-    /// Merges a segment without siblings into its parent. Returns where the
-    /// segment's text now starts.
+    /// Merges a segment into its parent. Its children take its place among its
+    /// siblings, which now come after its text. Returns where that text starts.
     pub fn join(&mut self, id: SegId) -> Option<Pos> {
-        if !self.can_join(id) {
-            return None;
-        }
         let parent = self.get(id).parent?;
         let seg = self.segs.remove(&id)?;
         for c in &seg.children {
             self.get_mut(*c).parent = Some(parent);
         }
         let p = self.get_mut(parent);
-        p.children = seg.children;
+        let i = p.children.iter().position(|c| *c == id).expect("is parent's child");
+        p.children.splice(i..=i, seg.children);
         if !p.text.is_empty() && !seg.text.is_empty() {
             p.text.push('\n');
         }
@@ -241,9 +235,8 @@ impl Doc {
     /// Applies a text editor's change to the path ending at `tip`, where
     /// `caret` is the editor's caret afterward. Returns the new tip and caret.
     ///
-    /// Forks that were touched get joined, unless they have siblings. Fork
-    /// lines that were written split the segment, except that a single one with
-    /// the caret right after it (so, typed) forks there.
+    /// Forks that were touched get joined. Fork lines that were written split
+    /// the segment.
     pub fn edit_path(&mut self, tip: SegId, new: &str, caret: usize) -> (SegId, Pos) {
         let old = self.path_text(tip);
         let path = self.path(tip);
@@ -285,52 +278,31 @@ impl Doc {
         let mut head = self.get(path[h]).text[..p.min(h_end) - starts[h]].to_owned();
         let tail = self.get(path[t]).text[e.max(t_start) - t_start..].to_owned();
         let within_fork = p >= h_end && e <= t_start;
+        let between = within_fork && h != t && !head.is_empty() && !tail.is_empty();
         head.push_str(&ins);
-        let caret_off = head.len();
-
-        // Empty out the interior, then join what can be joined.
-        for &s in &path[h..=t] {
-            self.set_text(s, String::new());
+        let mut caret_off = head.len();
+        if between {
+            head.push('\n');
+            // Backspace from after the fork, rather than Delete from before it.
+            if p > h_end {
+                caret_off = head.len();
+            }
         }
-        let mut survivor = path[h];
-        let mut first_group_is_all = true;
+        head.push_str(&tail);
+
         for &s in &path[h + 1..=t] {
-            if self.can_join(s) {
-                self.join(s);
-            } else {
-                survivor = s;
-                first_group_is_all = false;
-            }
+            self.set_text(s, String::new());
+            self.join(s);
         }
-        if first_group_is_all {
-            let nl = h != t && within_fork && !head.is_empty() && !tail.is_empty();
-            let nl = if nl { "\n" } else { "" };
-            self.set_text(survivor, format!("{head}{nl}{tail}"));
-        } else {
-            self.set_text(path[h], head);
-            self.set_text(survivor, tail);
-        }
-        let mut tip = if self.segs.contains_key(&tip) { tip } else { survivor };
-        let mut caret = Pos { seg: path[h], off: caret_off };
+        let seg = path[h];
+        self.set_text(seg, head);
+        let mut tip = if self.segs.contains_key(&tip) { tip } else { seg };
+        let mut caret = Pos { seg, off: caret_off };
 
-        // Later segments first, so that `path[h]`'s caret is handled last.
-        let mut affected = vec![survivor, path[h]];
-        affected.dedup();
-        for seg in affected {
-            let text = self.get(seg).text.clone();
-            let pieces = split_forks(&text);
-            if pieces.len() == 1 {
-                continue;
-            }
-            let new_caret = (caret.seg == seg).then(|| caret_piece(&text, &pieces, caret.off));
-            if let ([left, right], Some((1, 0))) = (&pieces[..], new_caret) {
-                let right = right.trim_start_matches([' ', '\t']);
-                let nl = if left.is_empty() || right.is_empty() { "" } else { "\n" };
-                self.set_text(seg, format!("{left}{nl}{right}"));
-                caret = self.fork(Pos { seg, off: left.len() });
-                tip = caret.seg;
-                continue;
-            }
+        let text = self.get(seg).text.clone();
+        let pieces = split_forks(&text);
+        if pieces.len() > 1 {
+            let (i, off) = caret_piece(&text, &pieces, caret.off);
             let mut cur = seg;
             let mut ids = vec![seg];
             let mut pieces = pieces.into_iter();
@@ -344,9 +316,7 @@ impl Doc {
             if tip == seg {
                 tip = cur;
             }
-            if let Some((i, off)) = new_caret {
-                caret = Pos { seg: ids[i], off };
-            }
+            caret = Pos { seg: ids[i], off };
         }
         (tip, caret)
     }
