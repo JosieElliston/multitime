@@ -449,9 +449,18 @@ impl Session {
                     for s in &sibs[range.clone()] {
                         self.doc.delete(*s);
                     }
-                    let left = range.start.checked_sub(1).unwrap_or(range.end);
-                    self.show(sibs[left]);
-                    self.enter(sibs[left]);
+                    // The caret stays where the deleted marks were.
+                    match range.start.checked_sub(1) {
+                        Some(left) => {
+                            self.show(sibs[left]);
+                            self.enter(sibs[left]);
+                        }
+                        None => {
+                            self.show(sibs[range.end]);
+                            let parent = self.doc.get(sibs[range.end]).parent.expect("in a bubble");
+                            self.go_to(self.doc.end(parent));
+                        }
+                    }
                     return;
                 }
             }
@@ -557,11 +566,13 @@ impl Session {
         if before.doc == self.doc {
             return;
         }
-        if !coalesce {
+        // Adding or deleting branches is always its own step.
+        let forked = !self.doc.ids().eq(before.doc.ids());
+        if !coalesce || forked {
             self.record(before);
         }
         self.redo.clear();
-        self.typing = Some((self.caret, now));
+        self.typing = (!forked).then_some((self.caret, now));
     }
 
     pub fn split(&mut self) {

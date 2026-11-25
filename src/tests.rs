@@ -226,7 +226,17 @@ fn bubbles() {
     assert_eq!(show(&s), "R[^>|] U");
     backspace(&mut s);
     assert_eq!(show(&s), "R| U");
-    s.undo(); // coalesced
+    // Each is its own undo step.
+    s.undo();
+    assert_eq!(show(&s), "R[^>|] U");
+    s.undo();
+    assert_eq!(s.doc(), full.doc());
+    // The first one leaves the caret before the bubble.
+    let mut s = full.clone();
+    s.enter(at(&s, 2));
+    backspace(&mut s);
+    assert_eq!(show(&s), "R|[^>]F[^>]D");
+    s.undo();
     // Delete, in and at the end of it.
     s.enter(at(&s, 2));
     let o = s.caret_offset();

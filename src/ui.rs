@@ -448,17 +448,22 @@ impl App {
                 }
             }
             // Selections don't end within bubbles, and Up and Down (which set
-            // `h_pos`) don't go into them, since that would switch branches.
+            // `h_pos`) only go to either side or to the active branch, since
+            // anywhere else would switch branches.
             let vertical = r.h_pos.is_some() && !pointer;
             if !r.is_empty() || vertical {
-                for (b, _) in bubbles {
+                for (b, seg) in bubbles {
                     if b.start < new && new < b.end {
-                        let forward = if pointer || vertical {
-                            new - b.start > b.end - new
+                        let sibs = self.session.doc().siblings(seg);
+                        let active = b.start + 1 + sibs.iter().position(|s| *s == seg).expect("sibling");
+                        new = if vertical {
+                            let stops = [b.start, active, b.end];
+                            stops.into_iter().min_by_key(|s| s.abs_diff(new)).expect("nonempty")
+                        } else if if pointer { new - b.start > b.end - new } else { new > caret } {
+                            b.end
                         } else {
-                            new > caret
+                            b.start
                         };
-                        new = if forward { b.end } else { b.start };
                         break;
                     }
                 }

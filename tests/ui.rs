@@ -554,13 +554,17 @@ fn bubbles() {
 }
 
 #[test]
-fn up_and_down_skip_bubbles() {
-    let mut h = harness("R U F D\n>\n  \n  B\n>\n  L\n");
-    click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
+fn up_and_down_keep_the_branch() {
+    // The bubble is 2 * 18 + 8 wide, starting after `R U F`.
+    let mut h = harness("R U F\n>\n  \n  B D L R U F D L\n>\n  L\n");
     let tip = h.state().session.tip();
-    for k in [Key::ArrowUp, Key::ArrowDown, Key::ArrowUp, Key::ArrowDown] {
-        key(&mut h, Modifiers::NONE, k);
-        assert!(h.state().session.tip() == tip && !h.state().session.inside());
+    for (x, inside, off) in [(65.0, false, 5), (83.0, true, 0), (110.0, false, 0)] {
+        click(&mut h, pos2(x, 67.0), PointerButton::Primary);
+        key(&mut h, Modifiers::NONE, Key::ArrowUp);
+        let s = &h.state().session;
+        assert!(s.tip() == tip && s.inside() == inside && s.caret().off == off, "{x} {:?} {}", s.caret(), s.inside());
+        key(&mut h, Modifiers::NONE, Key::ArrowDown);
+        assert_eq!(h.state().session.tip(), tip);
     }
 }
 

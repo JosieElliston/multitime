@@ -14,13 +14,13 @@ cargo run [file]  # default: solve.txt
 
 A bubble is where the text can continue in several ways. It has a `>` for each branch. The active one is highlighted, and its text is shown after the bubble.
 
-The caret can go into a bubble. Whichever `>` it's right after becomes active. Alt+Left and Alt+Right go into and out of a bubble without changing the active branch, as do Up and Down past one.
+The caret can go into a bubble. Whichever `>` it's right after becomes active. Alt+Left and Alt+Right go into and out of a bubble without changing the active branch. Up and Down don't change it either: they land on either side of a bubble, or right after its active `>`.
 
 Type a `>` to split the text with a bubble, which puts the caret in it. In a bubble, `>` adds an empty branch, so `>>` is a new branch beside the text that was there. Anything else goes after the bubble. Pasting is the same as typing. In a comment, a `>` is just text. A comment ends at a bubble.
 
 Or press Cmd+Enter to fork at the caret, or after the comment that it's in. If there's text after it, that becomes the other branch. Right before or after a bubble on the same line, it adds a branch to that one instead.
 
-In a bubble, Backspace deletes a `>` along with its branch, though the only `>` just merges its text into what came before. Right after a bubble, Backspace deletes the bubble: the active branch's text stays, and the other branches are deleted. Deleting a selection does the same to each bubble in it. Copying a bubble copies just the active `>`.
+In a bubble, Backspace deletes a `>` along with its branch, though the only `>` just merges its text into what came before. Adding or deleting a branch is always its own undo step. Right after a bubble, Backspace deletes the bubble: the active branch's text stays, and the other branches are deleted. Deleting a selection does the same to each bubble in it. Copying a bubble copies just the active `>`.
 
 ### text mode and twist mode
 
