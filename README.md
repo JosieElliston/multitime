@@ -14,13 +14,15 @@ cargo run [file]  # default: solve.txt
 
 A `>` is like a line break that can have several next lines. The text box shows all of a fork's branches as a row of `>`s, with the current one highlighted. Click another to switch to it.
 
-Type `>` to fork at the caret. If there's text after it, that becomes the other branch. Delete a `>` to merge its branch into what came before; any other branches then continue from the end of the merged text.
+Press Cmd+Enter to fork at the caret. If there's text after it, that becomes the other branch.
 
-### typing and twisting
+In the text box, a `>` is plain text. Alone on its line, it splits the segment there: the text after it, and any branches, become a single branch. That's the same whether it's typed or pasted. Delete a `>` to merge its branch into what came before; any other branches then continue from the end of the merged text.
 
-Esc cycles between typing, twisting on the first puzzle, and twisting on the second. Clicking the text box or a puzzle also switches.
+### text mode and twist mode
 
-| Key | Typing | Twisting |
+Esc cycles between text mode, twist mode on the first puzzle, and twist mode on the second. Clicking the text box or a puzzle also switches.
+
+| Key | Text mode | Twist mode |
 | --- | --- | --- |
 | Most keys | insert text | insert a twist (see below) |
 | Left, Right | move by character | move by token |
@@ -28,14 +30,14 @@ Esc cycles between typing, twisting on the first puzzle, and twisting on the sec
 | Backspace, Delete | delete a character | delete a token (a bracket deletes its whole group) |
 | Home, End | go to the ends of the line | go to the ends of the path |
 
-In twisting mode, a `>` counts as a token. Hold Shift with Left, Right, Home, or End to select.
+In twist mode, a `>` counts as a token. Hold Shift with Left, Right, Home, or End to select.
 
 These work in both modes:
 
 | Key | Action |
 | --- | --- |
 | Cmd+Z, Cmd+Shift+Z | undo, redo |
-| Cmd+A, Cmd+C, Cmd+X, Cmd+V | select all, copy, cut, paste (copying and cutting leave out `>`s) |
+| Cmd+A, Cmd+C, Cmd+X, Cmd+V | select all, copy, cut, paste |
 | Cmd+Enter | fork |
 | Cmd+D | split the segment at the caret, without adding a branch |
 | Cmd+J | merge this segment into its parent |
@@ -48,9 +50,9 @@ These work in both modes:
 | --- | --- | --- |
 | Puzzle | right-click, left-click a sticker | turn its face clockwise, counterclockwise |
 | Puzzle | drag | rotate the view |
-| Map | click | move the caret |
-| Map | double-click | move the caret, and end the text box's path at that segment |
-| Map | drag, or Shift+click | select along a path |
+| Timeline | click | move the caret |
+| Timeline | double-click | move the caret, and end the text box's path at that segment |
+| Timeline | drag, or Shift+click | select along a path |
 
 ### twist keys
 

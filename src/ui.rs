@@ -1,6 +1,6 @@
 //! egui front end. Holds only view state; everything else is in `Session`.
 
-use crate::doc::{self, Doc, FORK, Pos, SegId};
+use crate::doc::{Doc, FORK, Pos, SegId};
 use crate::notation::{self, GroupKind, Inversion, TokenKind};
 use crate::puzzle::{self, Perm, STICKERS};
 use crate::session::{InversionMode, Session};
@@ -18,7 +18,7 @@ const GROUP: Color32 = Color32::from_rgb(190, 140, 255);
 const NISS: Color32 = Color32::from_rgb(255, 120, 200);
 const ERROR: Color32 = Color32::from_rgb(255, 80, 80);
 const DIM: Color32 = Color32::from_gray(120);
-/// Caret in both the text box and the map.
+/// Caret in both the text box and the timeline.
 const CARET: Stroke = Stroke { width: 2.0, color: Color32::WHITE };
 /// Where hovering would put the caret.
 const GHOST_CARET: Stroke = Stroke { width: 2.0, color: Color32::from_gray(130) };
@@ -31,20 +31,20 @@ struct View {
     pitch: f32,
 }
 
-/// The timeline is always focused: there's one caret and selection, and mostly
-/// the same commands. This is what a key inserts, and the unit that keys move
-/// and delete by. The text box always has egui's focus, but when twisting, it
-/// only gets the pointer and the clipboard.
+/// There's one caret and selection, and mostly the same commands in each mode.
+/// The mode is what a key inserts, and the unit that keys move and delete by.
+/// The text box always has egui's focus, but in twist mode, it only gets the
+/// pointer and the clipboard.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Keys {
+enum Mode {
     /// Characters, in the text box.
-    Type,
+    Text,
     /// Tokens, with twists done in this view.
     Twist(usize),
 }
 
-/// What a gesture on the map does.
-enum MapAction {
+/// What a gesture on the timeline does.
+enum TimelineAction {
     Go(Pos),
     /// Goes there and makes it the tip.
     Shorten(Pos),
@@ -58,15 +58,13 @@ pub struct App {
     saved: Doc,
     status: String,
     views: Vec<View>,
-    keys: Keys,
-    /// Position hovered last frame, in the map or the text box. Both show a ghost
-    /// caret there, and the views show it instead of the caret.
+    mode: Mode,
+    /// Position hovered last frame, in the timeline or the text box. Both show a
+    /// ghost caret there, and the views show it instead of the caret.
     preview: Option<Pos>,
     /// A key was pressed since the pointer last moved. Otherwise a pointer
     /// resting on the text box would hide what's being typed.
     ignore_hover: bool,
-    /// Input held back until the text box has handled what came before it.
-    deferred: Vec<Event>,
 }
 
 impl eframe::App for App {
@@ -132,15 +130,14 @@ impl App {
                 view(InversionMode::Attached),
                 view(InversionMode::Detached(Inversion::Inverse)),
             ],
-            keys: Keys::Twist(0),
+            mode: Mode::Twist(0),
             preview: None,
             ignore_hover: false,
-            deferred: vec![],
         }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
-        // Keep the text box focused. See `Keys`.
+        // Keep the text box focused. See `Mode`.
         ui.ctx().options_mut(|o| {
             o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
         });
@@ -160,8 +157,8 @@ impl App {
         self.preview = self.preview.filter(|p| !self.ignore_hover && self.is_valid(*p));
         let mut preview = None;
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("map").resizable(true).default_size(190.0).show(ui, |ui| {
-            self.map(ui, &mut preview);
+        egui::Panel::bottom("timeline").resizable(true).default_size(190.0).show(ui, |ui| {
+            self.timeline(ui, &mut preview);
         });
         egui::Panel::right("views").resizable(true).default_size(420.0).show(ui, |ui| {
             let height = ui.available_height() / self.views.len() as f32;
@@ -188,34 +185,7 @@ impl App {
         doc.ids().any(|s| s == p.seg) && doc.get(p.seg).text.is_char_boundary(p.off)
     }
 
-    /// Takes typed `>`s, which fork. The text box has to handle whatever was
-    /// typed earlier in the frame first, so the rest waits for the next frame.
-    fn typed_forks(&mut self, ui: &mut Ui) {
-        let mut events = std::mem::take(&mut self.deferred);
-        ui.input_mut(|i| events.append(&mut i.events));
-        if self.keys == Keys::Type {
-            while let Some(i) = events.iter().position(|e| *e == Event::Text(">".to_owned())) {
-                if i > 0 {
-                    self.deferred = events.split_off(i);
-                    ui.ctx().request_repaint();
-                    break;
-                }
-                if !self.session.type_fork() {
-                    // An ordinary character. Later ones still have to wait.
-                    self.deferred = events.split_off(1);
-                    if !self.deferred.is_empty() {
-                        ui.ctx().request_repaint();
-                    }
-                    break;
-                }
-                events.remove(0);
-            }
-        }
-        ui.input_mut(|i| i.events = events);
-    }
-
     fn shortcuts(&mut self, ui: &mut Ui) {
-        self.typed_forks(ui);
         let key = |m, k| ui.input_mut(|i| i.consume_key(m, k));
         let (cmd, shift) = (Modifiers::COMMAND, Modifiers::SHIFT);
         let s = &mut self.session;
@@ -246,15 +216,15 @@ impl App {
         }
         // Would insert a tab or move egui's focus.
         key(Modifiers::NONE, Key::Tab);
-        // Escape cycles: typing, then twisting in each view.
+        // Escape cycles: text mode, then twist mode in each view.
         if key(Modifiers::NONE, Key::Escape) {
-            self.keys = match self.keys {
-                Keys::Type => Keys::Twist(0),
-                Keys::Twist(i) if i + 1 < self.views.len() => Keys::Twist(i + 1),
-                Keys::Twist(_) => Keys::Type,
+            self.mode = match self.mode {
+                Mode::Text => Mode::Twist(0),
+                Mode::Twist(i) if i + 1 < self.views.len() => Mode::Twist(i + 1),
+                Mode::Twist(_) => Mode::Text,
             };
         }
-        let Keys::Twist(view) = self.keys else {
+        let Mode::Twist(view) = self.mode else {
             return;
         };
         ui.input_mut(|input| {
@@ -402,7 +372,7 @@ impl App {
         let margin = egui::Margin { left: 4, right: 4, top: 2, bottom: 2 + children_height };
         ui.visuals_mut().text_cursor.stroke = CARET;
         ui.visuals_mut().text_cursor.blink = false;
-        if self.keys != Keys::Type {
+        if self.mode != Mode::Text {
             ui.visuals_mut().selection.stroke.width = 0.0; // focus border
         }
         let out = egui::TextEdit::multiline(&mut text)
@@ -424,17 +394,8 @@ impl App {
         // `out.cursor_range` doesn't include this frame's clicks, but this does.
         let range = out.state.cursor.char_range();
         if out.response.is_pointer_button_down_on() {
-            self.keys = Keys::Type;
+            self.mode = Mode::Text;
         }
-        // Copying and cutting leave out the forks.
-        ui.output_mut(|o| {
-            for command in &mut o.commands {
-                if let egui::OutputCommand::CopyText(s) = command {
-                    *s = doc::without_forks(s);
-                }
-            }
-        });
-
         let byte = |c: egui::text::CCursor| {
             let n: usize = c.index.into();
             text.char_indices().nth(n).map_or(text.len(), |(i, _)| i)
@@ -614,13 +575,13 @@ impl App {
                 Inversion::Normal => MOVE,
                 Inversion::Inverse => NISS,
             };
-            let width = if self.keys == Keys::Twist(i) { 2.0 } else { 0.5 };
+            let width = if self.mode == Mode::Twist(i) { 2.0 } else { 0.5 };
             let stroke = Stroke::new(width, border);
             ui.painter().rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Inside);
 
             let face = draw_cube(ui, rect, &state, &self.views[i], r.interact_pointer_pos());
             if r.clicked() || r.secondary_clicked() {
-                self.keys = Keys::Twist(i);
+                self.mode = Mode::Twist(i);
                 if let Some(face) = face {
                     let prime = if r.clicked() { "'" } else { "" };
                     self.twist(i, &format!("{face}{prime}"));
@@ -629,11 +590,11 @@ impl App {
         });
     }
 
-    // ---- map ----
+    // ---- timeline ----
 
     /// Draws each path like a line of text with a cell per token and per fork.
     /// The caret goes between cells.
-    fn map(&mut self, ui: &mut Ui, preview: &mut Option<Pos>) {
+    fn timeline(&mut self, ui: &mut Ui, preview: &mut Option<Pos>) {
         const ROW: f32 = 26.0;
         struct Node {
             x: f32,
@@ -649,7 +610,7 @@ impl App {
             out: &mut BTreeMap<SegId, Node>,
         ) {
             let n = notation::parse(&doc.get(seg).text).tokens.len();
-            let len = n as f32 * MAP_STEP;
+            let len = n as f32 * TIMELINE_STEP;
             out.insert(seg, Node { x, row, len });
             for (i, &c) in doc.get(seg).children.iter().enumerate() {
                 let row = if i == 0 {
@@ -658,7 +619,7 @@ impl App {
                     *next_row += 1;
                     *next_row - 1
                 };
-                layout(doc, c, x + len + MAP_STEP, row, next_row, out);
+                layout(doc, c, x + len + TIMELINE_STEP, row, next_row, out);
             }
         }
         let doc = self.session.doc();
@@ -689,8 +650,8 @@ impl App {
                 for i in a.0..=b.0 {
                     let node = &nodes[&path[i]];
                     let text = &doc.get(path[i]).text;
-                    let x0 = if i == a.0 { map_x(text, a.1) } else { 0.0 };
-                    let x1 = if i == b.0 { map_x(text, b.1) } else { node.len };
+                    let x0 = if i == a.0 { timeline_x(text, a.1) } else { 0.0 };
+                    let x1 = if i == b.0 { timeline_x(text, b.1) } else { node.len };
                     let half = vec2(0.0, 7.0);
                     let band = Rect::from_min_max(at(node, x0) - half, at(node, x1) + half);
                     painter.rect_filled(band, 0.0, fill);
@@ -731,7 +692,7 @@ impl App {
                 }
                 let mut open_xs = vec![];
                 for (i, t) in tokens.iter().enumerate() {
-                    let c = at(node, (i as f32 + 0.5) * MAP_STEP);
+                    let c = at(node, (i as f32 + 0.5) * TIMELINE_STEP);
                     let col = token_color(t.kind).gamma_multiply(if on_path { 1.0 } else { 0.55 });
                     match t.kind {
                         TokenKind::Open => {
@@ -758,12 +719,12 @@ impl App {
                             painter.circle_filled(c, 4.0, col);
                         }
                     }
-                    let right = c + vec2(MAP_STEP / 2.0, 0.0);
+                    let right = c + vec2(TIMELINE_STEP / 2.0, 0.0);
                     stops.push((right, Pos { seg, off: t.span.end }));
                 }
             }
             let paint_caret = |pos: Pos, stroke| {
-                let c = at(&nodes[&pos.seg], map_x(&doc.get(pos.seg).text, pos.off));
+                let c = at(&nodes[&pos.seg], timeline_x(&doc.get(pos.seg).text, pos.off));
                 painter.line_segment([c - vec2(0.0, 10.0), c + vec2(0.0, 10.0)], stroke);
             };
             if let Some(pos) = self.preview.filter(|p| *p != caret) {
@@ -787,7 +748,7 @@ impl App {
                 let (&seg, _) = nodes
                     .iter()
                     .filter(|(s, _)| related(anchor.seg, **s))
-                    .filter(|(s, n)| **s == doc.root() || at(n, 0.0).x - MAP_STEP / 2.0 <= p.x)
+                    .filter(|(s, n)| **s == doc.root() || at(n, 0.0).x - TIMELINE_STEP / 2.0 <= p.x)
                     .min_by(|(_, a), (_, b)| {
                         let dy = |n: &Node| (at(n, 0.0).y - p.y).abs();
                         let dx = |n: &Node| (p.x - at(n, n.len).x).max(at(n, 0.0).x - p.x).max(0.0);
@@ -808,20 +769,20 @@ impl App {
                     None => None,
                 };
                 let to = drag_target(pointer, from.unwrap_or(self.session.anchor()))?;
-                return Some(MapAction::Select { from, to });
+                return Some(TimelineAction::Select { from, to });
             }
             let nearest = nearest_to(pointer, shift.then(|| self.session.anchor()))?;
             if nearest.0.distance(pointer) > 12.0 {
                 return None;
             }
             if r.clicked() && shift {
-                return Some(MapAction::Select { from: None, to: nearest.1 });
+                return Some(TimelineAction::Select { from: None, to: nearest.1 });
             }
             if r.double_clicked() {
-                return Some(MapAction::Shorten(nearest.1));
+                return Some(TimelineAction::Shorten(nearest.1));
             }
             if r.clicked() {
-                return Some(MapAction::Go(nearest.1));
+                return Some(TimelineAction::Go(nearest.1));
             }
             let pos = nearest.1;
             *preview = Some(pos);
@@ -831,27 +792,27 @@ impl App {
         });
         if let Some(action) = action.inner {
             match action {
-                MapAction::Go(pos) => self.session.go_to(pos),
-                MapAction::Shorten(pos) => {
+                TimelineAction::Go(pos) => self.session.go_to(pos),
+                TimelineAction::Shorten(pos) => {
                     self.session.set_tip(pos.seg);
                     self.session.go_to(pos);
                 }
-                MapAction::Select { from: Some(from), to } => self.session.set_selection(from, to),
-                MapAction::Select { from: None, to } => self.session.extend_to(to),
+                TimelineAction::Select { from: Some(from), to } => self.session.set_selection(from, to),
+                TimelineAction::Select { from: None, to } => self.session.extend_to(to),
             }
             ui.ctx().request_repaint();
         }
     }
 }
 
-/// Width of a cell on the map.
-const MAP_STEP: f32 = 12.0;
+/// Width of a cell on the timeline.
+const TIMELINE_STEP: f32 = 12.0;
 
-/// How far along its segment an offset is on the map.
+/// How far along its segment an offset is on the timeline.
 /// Inverse of `notation::gap_offset`, except within tokens and whitespace.
-fn map_x(text: &str, off: usize) -> f32 {
+fn timeline_x(text: &str, off: usize) -> f32 {
     let (gap, partway) = notation::gap(text, off);
-    (gap as f32 + if partway { 0.5 } else { 0.0 }) * MAP_STEP
+    (gap as f32 + if partway { 0.5 } else { 0.0 }) * TIMELINE_STEP
 }
 
 fn hover_text(text: &str, off: usize) -> String {

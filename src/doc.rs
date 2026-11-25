@@ -35,12 +35,6 @@ fn is_fork_line(line: &str) -> bool {
     line.trim() == ">"
 }
 
-/// Drops fork lines.
-pub fn without_forks(text: &str) -> String {
-    let lines: Vec<&str> = text.split('\n').filter(|l| !is_fork_line(l)).collect();
-    lines.join("\n")
-}
-
 /// Splits text on fork lines.
 fn split_forks(text: &str) -> Vec<String> {
     let mut out: Vec<Vec<&str>> = vec![vec![]];

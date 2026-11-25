@@ -185,6 +185,25 @@ fn editing_forks() {
 }
 
 #[test]
+fn cut_and_paste_forks() {
+    // Any stretch of a path without other branches.
+    let file = "R U\n>\n  F B\n  >\n    D L\n";
+    let s = Session::new(Doc::from_file(file).unwrap());
+    let text = s.doc().path_text(s.tip());
+    for (a, b, cut) in [(1, 7, "R B\n>\n  D L\n"), (1, 13, "R L\n"), (0, text.len(), "\n")] {
+        let mut s = s.clone();
+        replace(&mut s, a..b, "");
+        assert_eq!(s.doc().to_file(), cut);
+        replace(&mut s, a..a, &text[a..b]);
+        assert_eq!(s.doc().to_file(), file);
+    }
+    // A pasted fork splits: the branches now come after it.
+    let mut s = Session::new(Doc::from_file("R\n>\n  F\n>\n  D\n").unwrap());
+    replace(&mut s, 1..1, "\n>\nX");
+    assert_eq!(s.doc().to_file(), "R\n>\n  X\n  >\n    F\n  >\n    D\n");
+}
+
+#[test]
 fn files() {
     let text = "R' U'\n>\n  // cross\n  R F\n  >\n    [R: U2]\n>\n  ^(U F')\n";
     assert_eq!(Doc::from_file(text).unwrap().to_file(), text);
@@ -218,16 +237,6 @@ fn random_editing() {
                 5 => s.fork(),
                 6 => s.join(),
                 7 => s.twist("R", Normal),
-                8 if rng.below(3) == 0 => {
-                    let before = s.doc().to_file();
-                    if s.type_fork() {
-                        let after = s.doc().to_file();
-                        s.undo();
-                        assert_eq!(s.doc().to_file(), before);
-                        s.redo();
-                        assert_eq!(s.doc().to_file(), after);
-                    }
-                }
                 8 => {
                     s.step(rng.below(2) == 0, rng.below(2) == 0);
                     s.delete(rng.below(2) == 0);

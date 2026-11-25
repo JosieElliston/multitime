@@ -239,28 +239,6 @@ impl Session {
         }
     }
 
-    /// Types a `>`: replaces the selection with a fork. Returns false if it's an
-    /// ordinary character instead, because it's in a comment.
-    pub fn type_fork(&mut self) -> bool {
-        let start = if self.offset(self.anchor()) < self.offset(self.caret) {
-            self.anchor()
-        } else {
-            self.caret
-        };
-        if notation::parse(&self.doc.get(start.seg).text[..start.off]).in_comment {
-            return false;
-        }
-        let before = self.snapshot();
-        let undo = self.undo.len();
-        if self.anchor.is_some() {
-            self.delete(true);
-        }
-        self.undo.truncate(undo); // one step
-        self.caret = self.doc.fork(self.caret);
-        self.tip = self.caret.seg;
-        self.record(before);
-        true
-    }
     /// Offset in the path's text.
     fn offset(&self, pos: Pos) -> usize {
         self.doc.path_offset(self.tip, pos).expect("on path")
