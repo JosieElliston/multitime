@@ -115,8 +115,10 @@ impl Session {
         self.anchor = None;
     }
 
-    /// Selects a stretch of the path, leaving the caret at `caret`.
+    /// Selects a stretch of a path, leaving the caret at `caret`. One end must be
+    /// on the path to the other; otherwise this only moves the caret.
     pub fn set_selection(&mut self, anchor: Pos, caret: Pos) {
+        self.go_to(anchor);
         self.go_to(caret);
         let on_path = self.doc.path(self.tip).contains(&anchor.seg);
         self.anchor = (on_path && anchor != caret).then_some(anchor);
@@ -154,9 +156,8 @@ impl Session {
         }
     }
 
-    /// Moves the caret by one token along the path. Entering a fork counts.
-    pub fn step(&mut self, forward: bool) {
-        self.anchor = None;
+    /// The caret moved by one token along the path. Entering a fork counts.
+    fn stepped(&self, forward: bool) -> Pos {
         let path = self.doc.path(self.tip);
         let i = path.iter().position(|s| *s == self.caret.seg).expect("caret on path");
         let tokens = notation::parse(&self.doc.get(self.caret.seg).text).tokens;
@@ -168,12 +169,59 @@ impl Session {
             prev.or((self.caret.off > 0).then_some(0))
         };
         if let Some(off) = off {
-            self.caret.off = off;
+            Pos { off, ..self.caret }
         } else if forward && i + 1 < path.len() {
-            self.caret = Pos { seg: path[i + 1], off: 0 };
+            Pos { seg: path[i + 1], off: 0 }
         } else if !forward && i > 0 {
-            self.caret = self.doc.end(path[i - 1]);
+            self.doc.end(path[i - 1])
+        } else {
+            self.caret
         }
+    }
+
+    /// Moves the caret, or just its end of the selection if `extend`.
+    pub fn move_caret(&mut self, pos: Pos, extend: bool) {
+        if extend {
+            self.extend_to(pos);
+        } else {
+            self.go_to(pos);
+        }
+    }
+    pub fn step(&mut self, forward: bool, extend: bool) {
+        self.move_caret(self.stepped(forward), extend);
+    }
+    /// Moves the caret to the start or end of the path.
+    pub fn step_all(&mut self, forward: bool, extend: bool) {
+        let pos = if forward {
+            self.doc.end(self.tip)
+        } else {
+            Pos { seg: self.doc.root(), off: 0 }
+        };
+        self.move_caret(pos, extend);
+    }
+
+    /// Deletes the selection, or else one token. A token deletion stops at
+    /// forks.
+    pub fn delete(&mut self, forward: bool) {
+        let offset = |pos| self.doc.path_offset(self.tip, pos).expect("on path");
+        let (a, c) = (offset(self.anchor()), offset(self.caret));
+        let mut text = self.doc.path_text(self.tip);
+        let caret = if a != c {
+            text.replace_range(a.min(c)..a.max(c), "");
+            a.min(c)
+        } else {
+            let seg = &self.doc.get(self.caret.seg).text;
+            let Some((new, off)) = notation::delete(seg, self.caret.off, forward) else {
+                return;
+            };
+            let start = c - self.caret.off;
+            text.replace_range(start..start + seg.len(), &new);
+            start + off
+        };
+        // Not coalesced with typing.
+        self.typing = None;
+        self.edit(&text, caret);
+        self.typing = None;
     }
 
     pub fn twist(&mut self, mv: &str, inversion: Inversion) {

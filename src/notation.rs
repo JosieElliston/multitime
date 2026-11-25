@@ -421,6 +421,61 @@ fn splice_line(text: &str, at: usize, s: &str) -> (String, usize) {
     (new, at + 1 + s.len())
 }
 
+/// Span of the whole group that a bracket or separator belongs to, or just the
+/// token's own span if it's anything else (or the group never closes).
+fn deletion_span(text: &str, tokens: &[Token], index: usize) -> Range<usize> {
+    // Index of the opener, and indices of the group's tokens so far.
+    let mut stack: Vec<(usize, Vec<usize>)> = vec![];
+    for (i, t) in tokens.iter().enumerate() {
+        let s = &text[t.span.clone()];
+        if opener(s).is_some() {
+            stack.push((i, vec![i]));
+        } else if t.kind == TokenKind::Sep {
+            stack.last_mut().expect("in a group").1.push(i);
+        } else if s.starts_with([')', ']']) && t.kind != TokenKind::Stray {
+            let (open, members) = stack.pop().expect("closes a group");
+            if i == index || members.contains(&index) {
+                return tokens[open].span.start..t.span.end;
+            }
+        }
+    }
+    tokens[index].span.clone()
+}
+
+/// Deletes the token before or after the caret, or the one that the caret is
+/// partway through. Brackets and separators delete their whole group, since
+/// otherwise the group would swallow what's after it. Returns the new text and
+/// caret, or `None` if there's nothing to delete.
+pub fn delete(text: &str, caret: usize, forward: bool) -> Option<(String, usize)> {
+    let tokens = parse(text).tokens;
+    let index = if forward {
+        tokens.iter().position(|t| t.span.end > caret)
+    } else {
+        tokens.iter().rposition(|t| t.span.start < caret)
+    }?;
+    let mut span = deletion_span(text, &tokens, index);
+    // Include the whitespace up to the caret, unless it ends a comment.
+    if !parse(&text[..caret]).in_comment {
+        span = span.start.min(caret)..span.end.max(caret);
+    }
+    let (mut before, mut after) = (&text[..span.start], &text[span.end..]);
+
+    // Leave at most one space behind, and at least one if it's needed.
+    let mut space = "";
+    if after.is_empty() || after.starts_with(|c: char| c.is_whitespace() || ")],:".contains(c)) {
+        if let Some(b) = before.strip_suffix(' ') {
+            before = b;
+        } else if (before.is_empty() || before.ends_with(['\n', '(', '[']))
+            && let Some(a) = after.strip_prefix(' ')
+        {
+            after = a;
+        }
+    } else if !before.is_empty() && !before.ends_with(|c: char| c.is_whitespace() || "([".contains(c)) {
+        space = " ";
+    }
+    Some((format!("{before}{space}{after}"), before.len()))
+}
+
 /// Result of cutting a segment's text in two.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cut {

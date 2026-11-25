@@ -154,8 +154,14 @@ fn replace(s: &mut Session, r: std::ops::Range<usize>, with: &str) {
 fn editing_forks() {
     let mut s = Session::new(Doc::new("R\nU"));
     replace(&mut s, 1..1, "\n>");
-    assert_eq!(s.doc().path_text(s.tip()), "R\n>\nU");
+    // Writing a `>` forks, and what came after it is the other branch.
+    assert_eq!(s.doc().to_file(), "R\n>\n  U\n>\n\n");
+    assert_eq!(s.doc().path_text(s.tip()), "R\n>\n");
     assert_eq!(s.eval(s.caret()).0, st("R"));
+    s.undo();
+    s.go_to(Pos { seg: s.doc().root(), off: 1 });
+    s.split();
+    assert_eq!(s.doc().path_text(s.tip()), "R\n>\nU");
     // Deleting any one char of the fork joins.
     for i in 1..4 {
         let mut s = s.clone();
@@ -198,7 +204,7 @@ fn random_editing() {
         let mut s = Session::new(Doc::default());
         for _ in 0..30 {
             let text = s.doc().path_text(s.tip());
-            match rng.below(9) {
+            match rng.below(10) {
                 0..4 => {
                     let (a, b) = (rng.off(&text), rng.off(&text));
                     let (a, b) = (a.min(b), if rng.below(2) == 0 { a.min(b) } else { a.max(b) });
@@ -218,6 +224,10 @@ fn random_editing() {
                 5 => s.fork(),
                 6 => s.join(),
                 7 => s.twist("R", Normal),
+                8 => {
+                    s.step(rng.below(2) == 0, rng.below(2) == 0);
+                    s.delete(rng.below(2) == 0);
+                }
                 _ => {
                     let ids: Vec<_> = s.doc().ids().collect();
                     s.select(ids[rng.below(ids.len())]);
@@ -241,4 +251,69 @@ fn random_editing() {
         }
         assert_eq!(s.doc().to_file(), end);
     }
+}
+
+fn del(s: &str, forward: bool) -> String {
+    let c = s.find('|').unwrap();
+    let (mut t, c) = delete(&s.replace('|', ""), c, forward).unwrap();
+    t.insert(c, '|');
+    t
+}
+
+#[test]
+fn delete_examples() {
+    for (s, want) in [
+        ("R U2|", "R|"),
+        ("R U| F", "R| F"),
+        ("R U |F", "R |F"),
+        ("R |U", "|U"),
+        ("R U|2 F", "R| F"),
+        ("R [U: F]|2 D", "R| D"),
+        ("R [U:| F]2 D", "R| D"),
+        ("R ^(|U) D", "R| D"),
+        ("[R|: U]", "[|: U]"),
+        ("R (|U", "R |U"),
+        ("R(U)|F", "R| F"),
+        ("R // hi\n|F", "R |F"),
+        ("^(R)|", "|"),
+    ] {
+        assert_eq!(del(s, false), want, "{s}");
+    }
+    assert_eq!(del("R| U F", true), "R| F");
+    assert_eq!(del("R |(U F) D", true), "R| D");
+    assert_eq!(del("// hi|\nR F", true), "// hi\n|F");
+    assert!(delete("R", 0, false).is_none() && delete("R ", 1, true).is_none());
+}
+
+#[test]
+fn delete_leaves_other_tokens() {
+    let mut rng = Rng(31337);
+    for _ in 0..100_000 {
+        let text = rng.text(14);
+        let c = rng.off(&text);
+        let p = parse(&text);
+        let Some((new, nc)) = delete(&text, c, rng.below(2) == 0) else { continue };
+        assert!(new.is_char_boundary(nc));
+        // Unmatched brackets can become matched.
+        if !p.open.is_empty() || p.tokens.iter().any(|t| t.kind == TokenKind::Stray) {
+            continue;
+        }
+        let words = |s: &str| -> Vec<String> {
+            parse(s).tokens.iter().map(|t| s[t.span.clone()].to_owned()).collect()
+        };
+        let (old, new_words) = (words(&text), words(&new));
+        let head = old.iter().zip(&new_words).take_while(|(a, b)| a == b).count();
+        let gone = old.len() - new_words.len();
+        assert!(gone > 0, "{text:?} at {c} -> {new:?}");
+        assert!((0..=head).any(|i| old[i + gone..] == new_words[i..]), "{text:?} at {c} -> {new:?}");
+    }
+}
+
+#[test]
+fn delete_can_write_a_fork() {
+    let mut s = Session::new(Doc::new("> R"));
+    s.delete(false);
+    s.doc().check();
+    s.undo();
+    assert_eq!(s.doc().path_text(s.tip()), "> R");
 }

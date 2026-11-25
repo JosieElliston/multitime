@@ -1,7 +1,7 @@
 //! Drives the real UI headlessly. Screenshots go to target/ui-*.png.
 
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, pos2};
-use egui_kittest::Harness;
+use egui_kittest::{Harness, kittest::Queryable};
 use multitime::{doc::Doc, ui::App};
 
 const FILE: &str = "R' U' F D2 L
@@ -133,8 +133,11 @@ fn hyperspeedcube_keys() {
     key(&mut h, Modifiers::SHIFT, Key::Num3);
     key(&mut h, Modifiers::NONE, Key::Semicolon);
     assert_eq!(file(&h), "Dw' M y\n");
-    // Editing keys need the text box.
-    for m in [Modifiers::NONE, Modifiers::SHIFT, Modifiers::ALT, Modifiers::COMMAND] {
+    // Backspace is by tokens, and the text box's other deletions do nothing.
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "Dw' M\n");
+    key(&mut h, Modifiers::COMMAND, Key::Z);
+    for m in [Modifiers::ALT, Modifiers::COMMAND] {
         key(&mut h, m, Key::Backspace);
         key(&mut h, m, Key::Delete);
     }
@@ -354,7 +357,7 @@ fn clipboard_while_twisting() {
     typ(&mut h, "q \n");
     assert_eq!(file(&h), "R U\nF B\n");
     key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
-    assert_eq!(copied(&mut h), "F");
+    assert_eq!(copied(&mut h), "\nF");
     key(&mut h, Modifiers::NONE, Key::ArrowRight);
     key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(file(&h), "R U\nF U B\n");
@@ -362,4 +365,113 @@ fn clipboard_while_twisting() {
     key(&mut h, Modifiers::NONE, Key::Tab);
     key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(file(&h), "R U\nF U U B\n");
+}
+
+#[test]
+fn editing_by_tokens() {
+    let mut h = harness("R U2\n>\n  F' [R: U2] B2\n");
+    key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
+    assert_eq!(copied(&mut h), " B2");
+    key(&mut h, Modifiers::SHIFT, Key::ArrowRight);
+    assert_eq!(copied(&mut h), "");
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "R U2\n>\n  F'\n");
+    // Stops at the fork.
+    for _ in 0..3 {
+        key(&mut h, Modifiers::NONE, Key::Backspace);
+    }
+    assert_eq!(file(&h), "R U2\n>\n\n");
+    // Each is its own undo step.
+    key(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(file(&h), "R U2\n>\n  F'\n");
+    key(&mut h, Modifiers::NONE, Key::Home);
+    key(&mut h, Modifiers::NONE, Key::Delete);
+    assert_eq!(file(&h), "U2\n>\n  F'\n");
+    // A selection is deleted as is.
+    key(&mut h, Modifiers::SHIFT, Key::End);
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(file(&h), "\n");
+    // Select all is in both modes.
+    key(&mut h, Modifiers::NONE, Key::J);
+    key(&mut h, Modifiers::COMMAND, Key::A);
+    assert_eq!(copied(&mut h), "U");
+}
+
+#[test]
+fn typing_a_fork() {
+    let mut h = harness("R U\n>\n  F\n");
+    for _ in 0..2 {
+        key(&mut h, Modifiers::NONE, Key::Escape); // to the text box
+    }
+    for _ in 0..2 {
+        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    }
+    // At the end of a segment with children, it's a new child.
+    typ(&mut h, "\n>D");
+    assert_eq!(file(&h), "R U\n>\n  F\n>\n  D\n");
+    // In the middle of one, the rest becomes the other branch.
+    for _ in 0..4 {
+        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    }
+    typ(&mut h, "\n>\nB");
+    assert_eq!(file(&h), "R\n>\n  U\n  >\n    F\n  >\n    D\n>\n  B\n");
+}
+
+#[test]
+fn dragging_into_a_branch() {
+    // R is at 48, the fork is at 60, and F and B are at 84 and (if it's there) 96.
+    let mut h = harness("R\n>\n  F B\n>\n  D\n>\n  L U\n");
+    let button = |pos, pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let start = pos2(36.0, 625.0);
+    h.event(Event::PointerMoved(start));
+    h.event(button(start, true));
+    h.run_steps(1);
+    // Far past the end of each row, and then back within the root.
+    for (to, want) in [
+        (pos2(300.0, 680.0), "R\nL U"),
+        (pos2(300.0, 650.0), "R\nD"),
+        (pos2(300.0, 625.0), "R\nF B"),
+        (pos2(47.0, 675.0), "R"),
+        (pos2(300.0, 655.0), "R\nD"),
+    ] {
+        h.event(Event::PointerMoved(to));
+        h.run_steps(2);
+        assert_eq!(copied(&mut h), want, "{to:?}");
+    }
+    h.event(button(pos2(300.0, 655.0), false));
+    h.run_steps(2);
+    // Starting in another branch activates it.
+    h.event(Event::PointerMoved(pos2(96.0, 677.0)));
+    h.event(button(pos2(96.0, 677.0), true));
+    h.run_steps(1);
+    h.event(Event::PointerMoved(pos2(36.0, 640.0)));
+    h.run_steps(2);
+    assert_eq!(copied(&mut h).split_once('\n').unwrap().0, "R");
+    assert_eq!(h.state().session.doc().get(h.state().session.tip()).text, "L U");
+    h.event(button(pos2(36.0, 640.0), false));
+    h.run_steps(2);
+    h.event(Event::PointerMoved(pos2(84.0, 677.0)));
+    h.run_steps(3);
+    shot(&mut h, "ghost");
+}
+
+#[test]
+fn hovering_text() {
+    let mut h = harness("R U F D B L");
+    h.event(Event::PointerMoved(pos2(50.0, 50.0)));
+    h.run_steps(3);
+    shot(&mut h, "hover-text");
+    assert!(h.query_all_by_label("preview").count() > 0);
+    // Keys show the real caret until the pointer moves again.
+    key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.query_all_by_label("preview").count(), 0);
+    h.event(Event::PointerMoved(pos2(60.0, 50.0)));
+    h.run_steps(3);
+    assert!(h.query_all_by_label("preview").count() > 0);
 }

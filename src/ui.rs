@@ -20,6 +20,8 @@ const ERROR: Color32 = Color32::from_rgb(255, 80, 80);
 const DIM: Color32 = Color32::from_gray(120);
 /// Caret in both the text box and the map.
 const CARET: Stroke = Stroke { width: 2.0, color: Color32::WHITE };
+/// Where hovering would put the caret.
+const GHOST_CARET: Stroke = Stroke { width: 2.0, color: Color32::from_gray(130) };
 const EDITOR: &str = "path editor";
 const FONT: FontId = FontId::monospace(15.0);
 
@@ -29,13 +31,15 @@ struct View {
     pitch: f32,
 }
 
-/// Where keys go. The text box always has egui's focus, so that the caret,
-/// selection and clipboard work the same either way. When twisting, the keys
-/// that twist (and typing in general) are taken before it sees them.
+/// The timeline is always focused: there's one caret and selection, and mostly
+/// the same commands. This is what a key inserts, and the unit that keys move
+/// and delete by. The text box always has egui's focus, but when twisting, it
+/// only gets the pointer and the clipboard.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Keys {
+    /// Characters, in the text box.
     Type,
-    /// Twist in this view.
+    /// Tokens, with twists done in this view.
     Twist(usize),
 }
 
@@ -55,8 +59,12 @@ pub struct App {
     status: String,
     views: Vec<View>,
     keys: Keys,
-    /// Position hovered last frame; shown in the views instead of the caret.
+    /// Position hovered last frame, in the map or the text box. Both show a ghost
+    /// caret there, and the views show it instead of the caret.
     preview: Option<Pos>,
+    /// A key was pressed since the pointer last moved. Otherwise a pointer
+    /// resting on the text box would hide what's being typed.
+    ignore_hover: bool,
 }
 
 impl eframe::App for App {
@@ -124,6 +132,7 @@ impl App {
             ],
             keys: Keys::Twist(0),
             preview: None,
+            ignore_hover: false,
         }
     }
 
@@ -133,7 +142,19 @@ impl App {
             o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
         });
         ui.memory_mut(|m| m.request_focus(Id::unique(EDITOR)));
+        ui.input(|i| {
+            for event in &i.events {
+                match event {
+                    Event::PointerMoved(_) | Event::PointerButton { .. } => self.ignore_hover = false,
+                    Event::Key { pressed: true, .. } | Event::Text(_) | Event::Cut
+                    | Event::Paste(_) => self.ignore_hover = true,
+                    _ => {}
+                }
+            }
+        });
         self.shortcuts(ui);
+        // Edits since last frame can invalidate the preview.
+        self.preview = self.preview.filter(|p| !self.ignore_hover && self.is_valid(*p));
         let mut preview = None;
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("map").resizable(true).default_size(190.0).show(ui, |ui| {
@@ -152,6 +173,7 @@ impl App {
                 self.editor(ui, height, &mut preview);
             });
         });
+        preview = preview.filter(|_| !self.ignore_hover);
         if preview != self.preview {
             self.preview = preview;
             ui.ctx().request_repaint();
@@ -205,57 +227,56 @@ impl App {
         let Keys::Twist(view) = self.keys else {
             return;
         };
-        let none = Modifiers::NONE;
         ui.input_mut(|input| {
-            input.events.retain(|event| {
-                if matches!(event, egui::Event::Text(_) | egui::Event::Ime(_)) {
-                    return false;
-                }
-                let Event::Key { key, physical_key, pressed: true, repeat, modifiers } = *event else {
-                    return true;
-                };
-                // Deleting is for typing, like inserting. The last few are
-                // egui's Ctrl+letter deletions.
-                if matches!(key, Key::Backspace | Key::Delete)
-                    || (modifiers.ctrl && matches!(key, Key::H | Key::K | Key::U | Key::W))
-                {
-                    return false;
-                }
-                if modifiers != none && modifiers != shift {
-                    return true;
-                }
-                if modifiers == none {
-                    match key {
-                        Key::ArrowLeft => self.session.step(false),
-                        Key::ArrowRight => self.session.step(true),
-                        Key::ArrowUp => self.session.cycle_sibling(-1),
-                        Key::ArrowDown => self.session.cycle_sibling(1),
-                        _ => {}
+            input.events.retain(|event| match *event {
+                Event::Text(_) | Event::Ime(_) => false,
+                Event::Key { key, physical_key, pressed: true, repeat, modifiers } => {
+                    if modifiers.command {
+                        // Select all, and egui's zoom.
+                        return matches!(
+                            key,
+                            Key::A | Key::Plus | Key::Equals | Key::Minus | Key::Num0
+                        );
                     }
-                    if matches!(
-                        key,
-                        Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
-                    ) {
-                        return false;
+                    if !modifiers.ctrl && !modifiers.alt {
+                        let key = match key {
+                            Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
+                            | Key::Home | Key::End | Key::Backspace | Key::Delete => key,
+                            _ => physical_key.unwrap_or(key),
+                        };
+                        self.twist_mode_key(view, key, modifiers.shift, repeat);
                     }
+                    false
                 }
-                if key == Key::Enter {
-                    return false; // would type a newline
-                }
-                let Some(name) = cube_move(physical_key.unwrap_or(key)) else {
-                    return true;
-                };
-                if !repeat {
-                    let (face, amount) = name.split_at(1);
-                    if modifiers.shift && "RLUDFB".contains(face) {
-                        self.twist(view, &format!("{face}w{amount}"));
-                    } else {
-                        self.twist(view, name);
-                    }
-                }
-                false
+                _ => true,
             });
         });
+    }
+
+    /// The same commands that the text box has, but by tokens.
+    fn twist_mode_key(&mut self, view: usize, key: Key, shift: bool, repeat: bool) {
+        let s = &mut self.session;
+        match key {
+            Key::ArrowLeft => s.step(false, shift),
+            Key::ArrowRight => s.step(true, shift),
+            Key::ArrowUp if !shift => s.cycle_sibling(-1),
+            Key::ArrowDown if !shift => s.cycle_sibling(1),
+            Key::Home => s.step_all(false, shift),
+            Key::End => s.step_all(true, shift),
+            Key::Backspace => s.delete(false),
+            Key::Delete => s.delete(true),
+            _ => {
+                let Some(name) = cube_move(key).filter(|_| !repeat) else {
+                    return;
+                };
+                let (face, amount) = name.split_at(1);
+                if shift && "RLUDFB".contains(face) {
+                    self.twist(view, &format!("{face}w{amount}"));
+                } else {
+                    self.twist(view, name);
+                }
+            }
+        }
     }
 
     fn twist(&mut self, view: usize, mv: &str) {
@@ -428,13 +449,25 @@ impl App {
         }
 
         // egui hides its caret when the window is unfocused.
-        let c = egui::text::CCursor::new(text[..doc_offset(&self.session, self.session.caret())].chars().count());
-        let rect = out.galley.pos_from_cursor(c).translate(out.galley_pos.to_vec2());
-        ui.painter().vline(
-            rect.center().x,
-            rect.y_range().expand(1.5),
-            CARET,
-        );
+        let paint_caret = |off: usize, stroke| {
+            let c = egui::text::CCursor::new(text[..off].chars().count());
+            let rect = out.galley.pos_from_cursor(c).translate(out.galley_pos.to_vec2());
+            ui.painter().vline(rect.center().x, rect.y_range().expand(1.5), stroke);
+        };
+        paint_caret(doc_offset(&self.session, self.session.caret()), CARET);
+        if let Some(pos) = self.preview.filter(|p| self.is_valid(*p))
+            && pos != self.session.caret()
+            && let Some(off) = self.session.doc().path_offset(tip, pos)
+        {
+            paint_caret(off, GHOST_CARET);
+        }
+
+        if out.response.hovered()
+            && let Some(p) = ui.input(|i| i.pointer.hover_pos().filter(|_| !i.pointer.any_down()))
+        {
+            let off = byte(out.galley.cursor_from_pos(p - out.galley_pos));
+            *preview = Some(self.session.doc().path_pos(tip, off));
+        }
 
         // Paint the siblings at each fork.
         let mut clicked = None;
@@ -674,36 +707,59 @@ impl App {
                     stops.push((c, Pos { seg, off: t.span.end }));
                 }
                 stops.push((end, Pos { seg, off: s.text.len() }));
-                if caret.seg == seg {
-                    let c = at(node, map_x(&s.text, caret.off));
-                    painter.line_segment([c - vec2(0.0, 10.0), c + vec2(0.0, 10.0)], CARET);
-                }
             }
+            let paint_caret = |pos: Pos, stroke| {
+                let c = at(&nodes[&pos.seg], map_x(&doc.get(pos.seg).text, pos.off));
+                painter.line_segment([c - vec2(0.0, 10.0), c + vec2(0.0, 10.0)], stroke);
+            };
+            if let Some(pos) = self.preview.filter(|p| *p != caret) {
+                paint_caret(pos, GHOST_CARET);
+            }
+            paint_caret(caret, CARET);
 
             let pointer = r.interact_pointer_pos().or(r.hover_pos())?;
-            let nearest_to = |p: Pos2, path_only: bool| {
+            // Whether a selection can go between them.
+            let related = |a: SegId, b: SegId| doc.path(a).contains(&b) || doc.path(b).contains(&a);
+            let nearest_to = |p: Pos2, anchor: Option<Pos>| {
                 stops
                     .iter()
-                    .filter(|(_, pos)| !path_only || path.contains(&pos.seg))
+                    .filter(|(_, pos)| anchor.is_none_or(|a| related(a.seg, pos.seg)))
                     .min_by(|a, b| a.0.distance(p).total_cmp(&b.0.distance(p)))
                     .copied()
             };
+            // Drags pick the branch by row, even past its end, out of those that
+            // have started by then.
+            let drag_target = |p: Pos2, anchor: Pos| {
+                let (&seg, _) = nodes
+                    .iter()
+                    .filter(|(s, _)| related(anchor.seg, **s))
+                    .filter(|(s, n)| **s == doc.root() || at(n, 0.0).x - MAP_STEP / 2.0 <= p.x)
+                    .min_by(|(_, a), (_, b)| {
+                        let dy = |n: &Node| (at(n, 0.0).y - p.y).abs();
+                        let dx = |n: &Node| (p.x - at(n, n.len).x).max(at(n, 0.0).x - p.x).max(0.0);
+                        dy(a).total_cmp(&dy(b)).then(dx(a).total_cmp(&dx(b)))
+                    })?;
+                stops
+                    .iter()
+                    .filter(|(_, pos)| pos.seg == seg)
+                    .min_by(|a, b| (a.0.x - p.x).abs().total_cmp(&(b.0.x - p.x).abs()))
+                    .map(|s| s.1)
+            };
             let shift = ui.input(|i| i.modifiers.shift);
             if r.dragged_by(egui::PointerButton::Primary) {
-                let to = nearest_to(pointer, true)?.1;
                 // Like in text: a drag selects, and Shift extends instead.
                 let origin = ui.input(|i| i.pointer.press_origin());
                 let from = match origin.filter(|_| r.drag_started() && !shift) {
-                    Some(p) => Some(nearest_to(p, true)?.1),
+                    Some(p) => Some(nearest_to(p, None)?.1),
                     None => None,
                 };
+                let to = drag_target(pointer, from.unwrap_or(self.session.anchor()))?;
                 return Some(MapAction::Select { from, to });
             }
-            let nearest = nearest_to(pointer, shift)?;
+            let nearest = nearest_to(pointer, shift.then(|| self.session.anchor()))?;
             if nearest.0.distance(pointer) > 12.0 {
                 return None;
             }
-            painter.circle_stroke(nearest.0, 7.0, Stroke::new(1.0, Color32::WHITE));
             if r.clicked() && shift {
                 return Some(MapAction::Select { from: None, to: nearest.1 });
             }

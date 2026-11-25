@@ -242,7 +242,8 @@ impl Doc {
     /// `caret` is the editor's caret afterward. Returns the new tip and caret.
     ///
     /// Forks that were touched get joined, unless they have siblings. Fork
-    /// lines that were written split the segment.
+    /// lines that were written split the segment, except that a single one with
+    /// the caret right after it (so, typed) forks there.
     pub fn edit_path(&mut self, tip: SegId, new: &str, caret: usize) -> (SegId, Pos) {
         let old = self.path_text(tip);
         let path = self.path(tip);
@@ -322,6 +323,14 @@ impl Doc {
                 continue;
             }
             let new_caret = (caret.seg == seg).then(|| caret_piece(&text, &pieces, caret.off));
+            if let ([left, right], Some((1, 0))) = (&pieces[..], new_caret) {
+                let right = right.trim_start_matches([' ', '\t']);
+                let nl = if left.is_empty() || right.is_empty() { "" } else { "\n" };
+                self.set_text(seg, format!("{left}{nl}{right}"));
+                caret = self.fork(Pos { seg, off: left.len() });
+                tip = caret.seg;
+                continue;
+            }
             let mut cur = seg;
             let mut ids = vec![seg];
             let mut pieces = pieces.into_iter();
