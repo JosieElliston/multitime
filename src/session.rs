@@ -33,6 +33,8 @@ pub struct Session {
     doc: Doc,
     tip: SegId,
     caret: Pos,
+    /// Fixed end of the selection. The caret is the other end. On the path.
+    anchor: Option<Pos>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     /// Where and when the last typing edit ended, to coalesce typing.
@@ -47,7 +49,7 @@ impl Session {
             tip = *c;
         }
         let caret = doc.end(tip);
-        Self { doc, tip, caret, undo: vec![], redo: vec![], typing: None }
+        Self { doc, tip, caret, anchor: None, undo: vec![], redo: vec![], typing: None }
     }
 
     pub fn doc(&self) -> &Doc {
@@ -80,6 +82,7 @@ impl Session {
     fn restore(&mut self, s: Snapshot) {
         (self.doc, self.tip, self.caret) = (s.doc, s.tip, s.caret);
         self.typing = None;
+        self.anchor = None;
     }
     fn record(&mut self, before: Snapshot) {
         if before.doc != self.doc {
@@ -87,6 +90,7 @@ impl Session {
             self.redo.clear();
         }
         self.typing = None;
+        self.anchor = None;
     }
 
     pub fn undo(&mut self) {
@@ -108,10 +112,27 @@ impl Session {
             self.tip = pos.seg;
         }
         self.caret = pos;
+        self.anchor = None;
+    }
+
+    /// Selects a stretch of the path, leaving the caret at `caret`.
+    pub fn set_selection(&mut self, anchor: Pos, caret: Pos) {
+        self.go_to(caret);
+        let on_path = self.doc.path(self.tip).contains(&anchor.seg);
+        self.anchor = (on_path && anchor != caret).then_some(anchor);
+    }
+    /// Moves the caret, selecting from the old anchor or caret.
+    pub fn extend_to(&mut self, pos: Pos) {
+        self.set_selection(self.anchor(), pos);
+    }
+    /// Fixed end of the selection, or the caret if there's no selection.
+    pub fn anchor(&self) -> Pos {
+        self.anchor.unwrap_or(self.caret)
     }
     /// Shows a path ending at `tip`.
     pub fn set_tip(&mut self, tip: SegId) {
         self.tip = tip;
+        self.anchor = None;
         if !self.doc.path(tip).contains(&self.caret.seg) {
             self.caret = self.doc.end(tip);
         }
@@ -119,6 +140,7 @@ impl Session {
     /// Makes a segment the tip, with the caret at its end.
     pub fn select(&mut self, seg: SegId) {
         self.tip = seg;
+        self.anchor = None;
         self.caret = self.doc.end(seg);
     }
 
@@ -134,6 +156,7 @@ impl Session {
 
     /// Moves the caret by one token along the path. Entering a fork counts.
     pub fn step(&mut self, forward: bool) {
+        self.anchor = None;
         let path = self.doc.path(self.tip);
         let i = path.iter().position(|s| *s == self.caret.seg).expect("caret on path");
         let tokens = notation::parse(&self.doc.get(self.caret.seg).text).tokens;
@@ -164,6 +187,7 @@ impl Session {
 
     /// Applies an edit made in the path's text box.
     pub fn edit(&mut self, new: &str, caret: usize) {
+        self.anchor = None;
         let before = self.snapshot();
         let now = Instant::now();
         let coalesce = self.typing.is_some_and(|(pos, t)| {

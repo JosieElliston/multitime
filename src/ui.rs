@@ -1,6 +1,6 @@
 //! egui front end. Holds only view state; everything else is in `Session`.
 
-use crate::doc::{Doc, FORK, Pos, SegId};
+use crate::doc::{self, Doc, FORK, Pos, SegId};
 use crate::notation::{self, GroupKind, Inversion, TokenKind};
 use crate::puzzle::{self, Perm, STICKERS};
 use crate::session::{InversionMode, Session};
@@ -18,6 +18,9 @@ const GROUP: Color32 = Color32::from_rgb(190, 140, 255);
 const NISS: Color32 = Color32::from_rgb(255, 120, 200);
 const ERROR: Color32 = Color32::from_rgb(255, 80, 80);
 const DIM: Color32 = Color32::from_gray(120);
+/// Caret in both the text box and the map.
+const CARET: Stroke = Stroke { width: 2.0, color: Color32::WHITE };
+const EDITOR: &str = "path editor";
 const FONT: FontId = FontId::monospace(15.0);
 
 struct View {
@@ -26,13 +29,32 @@ struct View {
     pitch: f32,
 }
 
+/// Where keys go. The text box always has egui's focus, so that the caret,
+/// selection and clipboard work the same either way. When twisting, the keys
+/// that twist (and typing in general) are taken before it sees them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keys {
+    Type,
+    /// Twist in this view.
+    Twist(usize),
+}
+
+/// What a gesture on the map does.
+enum MapAction {
+    Go(Pos),
+    /// Goes there and makes it the tip.
+    Shorten(Pos),
+    /// Selects from `from`, or else from where the selection already starts.
+    Select { from: Option<Pos>, to: Pos },
+}
+
 pub struct App {
     pub session: Session,
     path: PathBuf,
     saved: Doc,
     status: String,
     views: Vec<View>,
-    active_view: usize,
+    keys: Keys,
     /// Position hovered last frame; shown in the views instead of the caret.
     preview: Option<Pos>,
 }
@@ -100,12 +122,17 @@ impl App {
                 view(InversionMode::Attached),
                 view(InversionMode::Detached(Inversion::Inverse)),
             ],
-            active_view: 0,
+            keys: Keys::Twist(0),
             preview: None,
         }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
+        // Keep the text box focused. See `Keys`.
+        ui.ctx().options_mut(|o| {
+            o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
+        });
+        ui.memory_mut(|m| m.request_focus(Id::unique(EDITOR)));
         self.shortcuts(ui);
         let mut preview = None;
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
@@ -119,8 +146,10 @@ impl App {
             }
         });
         egui::CentralPanel::default().show(ui, |ui| {
+            // The text box is at least as tall as the panel, and the panel scrolls.
+            let height = ui.available_height();
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                self.editor(ui, &mut preview);
+                self.editor(ui, height, &mut preview);
             });
         });
         if preview != self.preview {
@@ -163,37 +192,55 @@ impl App {
         if key(cmd, Key::S) {
             self.save();
         }
-        if ui.ctx().egui_wants_keyboard_input() {
+        // Would insert a tab or move egui's focus.
+        key(Modifiers::NONE, Key::Tab);
+        // Escape cycles: typing, then twisting in each view.
+        if key(Modifiers::NONE, Key::Escape) {
+            self.keys = match self.keys {
+                Keys::Type => Keys::Twist(0),
+                Keys::Twist(i) if i + 1 < self.views.len() => Keys::Twist(i + 1),
+                Keys::Twist(_) => Keys::Type,
+            };
+        }
+        let Keys::Twist(view) = self.keys else {
             return;
-        }
+        };
         let none = Modifiers::NONE;
-        if key(none, Key::ArrowLeft) {
-            self.session.step(false);
-        }
-        if key(none, Key::ArrowRight) {
-            self.session.step(true);
-        }
-        if key(none, Key::ArrowUp) {
-            self.session.cycle_sibling(-1);
-        }
-        if key(none, Key::ArrowDown) {
-            self.session.cycle_sibling(1);
-        }
         ui.input_mut(|input| {
             input.events.retain(|event| {
+                if matches!(event, egui::Event::Text(_) | egui::Event::Ime(_)) {
+                    return false;
+                }
                 let Event::Key { key, physical_key, pressed: true, repeat, modifiers } = *event else {
                     return true;
                 };
+                // Deleting is for typing, like inserting. The last few are
+                // egui's Ctrl+letter deletions.
+                if matches!(key, Key::Backspace | Key::Delete)
+                    || (modifiers.ctrl && matches!(key, Key::H | Key::K | Key::U | Key::W))
+                {
+                    return false;
+                }
                 if modifiers != none && modifiers != shift {
                     return true;
                 }
-                if key == Key::Backspace {
-                    if modifiers.shift {
-                        self.session.redo();
-                    } else {
-                        self.session.undo();
+                if modifiers == none {
+                    match key {
+                        Key::ArrowLeft => self.session.step(false),
+                        Key::ArrowRight => self.session.step(true),
+                        Key::ArrowUp => self.session.cycle_sibling(-1),
+                        Key::ArrowDown => self.session.cycle_sibling(1),
+                        _ => {}
                     }
-                    return false;
+                    if matches!(
+                        key,
+                        Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
+                    ) {
+                        return false;
+                    }
+                }
+                if key == Key::Enter {
+                    return false; // would type a newline
                 }
                 let Some(name) = cube_move(physical_key.unwrap_or(key)) else {
                     return true;
@@ -201,9 +248,9 @@ impl App {
                 if !repeat {
                     let (face, amount) = name.split_at(1);
                     if modifiers.shift && "RLUDFB".contains(face) {
-                        self.twist(self.active_view, &format!("{face}w{amount}"));
+                        self.twist(view, &format!("{face}w{amount}"));
                     } else {
-                        self.twist(self.active_view, name);
+                        self.twist(view, name);
                     }
                 }
                 false
@@ -213,7 +260,6 @@ impl App {
 
     fn twist(&mut self, view: usize, mv: &str) {
         let (_, caret) = self.session.eval(self.session.caret());
-        self.active_view = view;
         self.session.twist(mv, self.views[view].mode.resolve(caret));
     }
 
@@ -248,10 +294,10 @@ impl App {
                 s.delete_branch();
             }
             ui.separator();
-            if button(ui, true, "Undo", "Cmd+Z or Backspace outside the editor") {
+            if button(ui, true, "Undo", "Cmd+Z") {
                 s.undo();
             }
-            if button(ui, true, "Redo", "Cmd+Shift+Z or Shift+Backspace outside the editor") {
+            if button(ui, true, "Redo", "Cmd+Shift+Z") {
                 s.redo();
             }
             ui.separator();
@@ -271,19 +317,26 @@ impl App {
 
     // ---- text editor ----
 
-    fn editor(&mut self, ui: &mut Ui, preview: &mut Option<Pos>) {
-        let id = Id::unique("path editor");
+    fn editor(&mut self, ui: &mut Ui, min_height: f32, preview: &mut Option<Pos>) {
+        let id = Id::unique(EDITOR);
         let tip = self.session.tip();
         let mut text = self.session.doc().path_text(tip);
-        let offset = |s: &Session| s.doc().path_offset(s.tip(), s.caret()).expect("caret on path");
-        let caret = offset(&self.session);
+        let doc_offset =
+            |s: &Session, pos| s.doc().path_offset(s.tip(), pos).expect("position on path");
+        let caret = doc_offset(&self.session, self.session.caret());
 
-        // The session owns the caret. Keep the selection if it's unchanged.
+        // The session owns the caret and selection.
         let caret_chars = text[..caret].chars().count();
+        let anchor = doc_offset(&self.session, self.session.anchor());
+        let range = egui::text::CCursorRange {
+            secondary: egui::text::CCursor::new(text[..anchor].chars().count()),
+            ..egui::text::CCursorRange::one(egui::text::CCursor::new(caret_chars))
+        };
         let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        if state.cursor.char_range().is_none_or(|r| r.primary.index != caret_chars.into()) {
-            let c = egui::text::CCursor::new(caret_chars);
-            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+        let old = state.cursor.char_range();
+        let moved = old.is_none_or(|r| r.primary.index != range.primary.index);
+        if moved || old.is_none_or(|r| r.secondary.index != range.secondary.index) {
+            state.cursor.set_char_range(Some(range));
             state.store(ui.ctx(), id);
         }
 
@@ -292,40 +345,96 @@ impl App {
             job.wrap.max_width = width;
             ui.fonts_mut(|f| f.layout_job(job))
         };
+        // The tip's children go within the box, under the text.
+        let children = self.session.doc().get(tip).children.clone();
+        let children_height = if children.is_empty() { 0 } else { 24 };
+        let margin = egui::Margin { left: 4, right: 4, top: 2, bottom: 2 + children_height };
+        ui.visuals_mut().text_cursor.stroke = CARET;
+        ui.visuals_mut().text_cursor.blink = false;
+        if self.keys != Keys::Type {
+            ui.visuals_mut().selection.stroke.width = 0.0; // focus border
+        }
         let out = egui::TextEdit::multiline(&mut text)
             .id(id)
+            .margin(margin)
+            .min_size(vec2(0.0, min_height))
             .desired_width(f32::INFINITY)
             .desired_rows(1)
+            // Escape is ours; see `shortcuts`.
+            .event_filter(egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                tab: false,
+                escape: true,
+            })
             .layouter(&mut layouter)
             .show(ui);
 
-        let new_caret = out.cursor_range.map(|r| {
-            let n: usize = r.primary.index.into();
-            text.char_indices().nth(n).map_or(text.len(), |(i, _)| i)
+        // `out.cursor_range` doesn't include this frame's clicks, but this does.
+        let range = out.state.cursor.char_range();
+        if out.response.is_pointer_button_down_on() {
+            self.keys = Keys::Type;
+        }
+        // Copying and cutting leave out the forks.
+        ui.output_mut(|o| {
+            for command in &mut o.commands {
+                if let egui::OutputCommand::CopyText(s) = command {
+                    *s = doc::without_forks(s);
+                }
+            }
         });
+
+        let byte = |c: egui::text::CCursor| {
+            let n: usize = c.index.into();
+            text.char_indices().nth(n).map_or(text.len(), |(i, _)| i)
+        };
         if out.response.changed() {
-            self.session.edit(&text, new_caret.unwrap_or(text.len()));
+            self.session.edit(&text, range.map_or(text.len(), |r| byte(r.primary)));
             return; // the rest of the layout is stale
         }
-        if let Some(new) = new_caret
-            && new != caret
+        if let Some(r) = range
+            && (byte(r.primary), byte(r.secondary)) != (caret, anchor)
         {
             let doc = self.session.doc();
-            let mut new = new;
-            // Cross forks in the direction of motion.
+            let mut new = byte(r.primary);
+            // The caret can't rest within a fork. Keys cross it in the direction
+            // of motion. The pointer goes to the nearest end, since a held drag
+            // would otherwise flip between the two.
+            let pointer = ui.input(|i| i.pointer.primary_down() || i.pointer.any_released());
             for (start, seg) in doc.path_starts(tip).into_iter().zip(doc.path(tip)) {
                 let end = start + doc.get(seg).text.len();
-                if end < new && new < end + FORK.len() && end + FORK.len() <= text.len() {
-                    new = if new > caret { end + FORK.len() } else { end };
+                let next = end + FORK.len();
+                if end < new && new < next && next <= text.len() {
+                    let forward = if pointer { new - end >= 2 } else { new > caret };
+                    new = if forward { next } else { end };
                     break;
                 }
             }
             let pos = doc.path_pos(tip, new);
-            self.session.go_to(pos);
-            if offset(&self.session) != new {
-                ui.ctx().request_repaint();
+            if r.is_empty() {
+                self.session.go_to(pos);
+            } else {
+                let anchor = doc.path_pos(tip, byte(r.secondary));
+                self.session.set_selection(anchor, pos);
             }
+            ui.ctx().request_repaint();
         }
+
+        // egui only follows carets that it moved itself.
+        if moved {
+            let c = egui::text::CCursor::new(caret_chars);
+            let rect = out.galley.pos_from_cursor(c).translate(out.galley_pos.to_vec2());
+            ui.scroll_to_rect(rect.expand(8.0), None);
+        }
+
+        // egui hides its caret when the window is unfocused.
+        let c = egui::text::CCursor::new(text[..doc_offset(&self.session, self.session.caret())].chars().count());
+        let rect = out.galley.pos_from_cursor(c).translate(out.galley_pos.to_vec2());
+        ui.painter().vline(
+            rect.center().x,
+            rect.y_range().expand(1.5),
+            CARET,
+        );
 
         // Paint the siblings at each fork.
         let mut clicked = None;
@@ -338,10 +447,8 @@ impl App {
             let sibs = self.session.doc().siblings(path[i]).to_vec();
             self.fork_marks(ui, rect.left_center(), &sibs, Some(path[i]), &mut clicked, preview);
         }
-        let children = self.session.doc().get(tip).children.clone();
         if !children.is_empty() {
-            let (rect, _) = ui.allocate_exact_size(vec2(1.0, 22.0), Sense::hover());
-            let at = pos2(out.galley_pos.x, rect.center().y);
+            let at = out.galley_pos + vec2(0.0, out.galley.size().y + 13.0);
             self.fork_marks(ui, at, &children, None, &mut clicked, preview);
         }
         if let Some(seg) = clicked {
@@ -360,10 +467,13 @@ impl App {
     ) {
         for (i, &seg) in segs.iter().enumerate() {
             let center = at + vec2(9.0 + 24.0 * i as f32, 0.0);
-            let rect = Rect::from_center_size(center, vec2(20.0, 18.0));
+            let rect = Rect::from_center_size(center, vec2(20.0, 16.0));
             let r = ui.interact(rect, Id::unique(("fork mark", seg)), Sense::click());
             let is_selected = selected == Some(seg);
             let color = if is_selected { ACCENT } else { DIM };
+            // Covers the real `>`, which isn't transparent when it's selected.
+            let background = ui.visuals().text_edit_bg_color();
+            ui.painter().rect_filled(rect.shrink2(vec2(-1.0, 2.0)), 0.0, background);
             if is_selected || r.hovered() {
                 ui.painter().rect_filled(rect, 4.0, color.gamma_multiply(0.25));
             }
@@ -426,14 +536,13 @@ impl App {
                 Inversion::Normal => MOVE,
                 Inversion::Inverse => NISS,
             };
-            let width = if i == self.active_view { 2.0 } else { 0.5 };
+            let width = if self.keys == Keys::Twist(i) { 2.0 } else { 0.5 };
             let stroke = Stroke::new(width, border);
             ui.painter().rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Inside);
 
             let face = draw_cube(ui, rect, &state, &self.views[i], r.interact_pointer_pos());
             if r.clicked() || r.secondary_clicked() {
-                self.active_view = i;
-                ui.ctx().memory_mut(|m| m.surrender_focus(Id::unique("path editor")));
+                self.keys = Keys::Twist(i);
                 if let Some(face) = face {
                     let prime = if r.clicked() { "'" } else { "" };
                     self.twist(i, &format!("{face}{prime}"));
@@ -445,7 +554,6 @@ impl App {
     // ---- map ----
 
     fn map(&mut self, ui: &mut Ui, preview: &mut Option<Pos>) {
-        const STEP: f32 = 12.0;
         const ROW: f32 = 26.0;
         struct Node {
             x: f32,
@@ -461,7 +569,7 @@ impl App {
             out: &mut BTreeMap<SegId, Node>,
         ) {
             let n = notation::parse(&doc.get(seg).text).tokens.len();
-            let len = (n + 1) as f32 * STEP;
+            let len = (n + 1) as f32 * MAP_STEP;
             out.insert(seg, Node { x, row, len });
             for (i, &c) in doc.get(seg).children.iter().enumerate() {
                 let row = if i == 0 {
@@ -470,7 +578,7 @@ impl App {
                     *next_row += 1;
                     *next_row - 1
                 };
-                layout(doc, c, x + len + STEP, row, next_row, out);
+                layout(doc, c, x + len + MAP_STEP, row, next_row, out);
             }
         }
         let doc = self.session.doc();
@@ -489,6 +597,33 @@ impl App {
             let path = doc.path(self.session.tip());
             let caret = self.session.caret();
             let mut stops: Vec<(Pos2, Pos)> = vec![];
+
+            // Selection, behind everything else.
+            let index = |p: Pos| path.iter().position(|s| *s == p.seg).map(|i| (i, p.off));
+            if let Some(a) = index(self.session.anchor())
+                && let Some(c) = index(caret)
+                && a != c
+            {
+                let (a, b) = (a.min(c), a.max(c));
+                let fill = ui.visuals().selection.bg_fill;
+                for i in a.0..=b.0 {
+                    let node = &nodes[&path[i]];
+                    let text = &doc.get(path[i]).text;
+                    let x0 = if i == a.0 { map_x(text, a.1) } else { 0.0 };
+                    let x1 = if i == b.0 { map_x(text, b.1) } else { node.len };
+                    let half = vec2(0.0, 7.0);
+                    let band = Rect::from_min_max(at(node, x0) - half, at(node, x1) + half);
+                    painter.rect_filled(band, 0.0, fill);
+                    if i > a.0 {
+                        let p = &nodes[&path[i - 1]];
+                        let (from, to) = (at(p, p.len), at(node, 0.0));
+                        let v = Rect::from_two_pos(from, pos2(from.x, to.y));
+                        let h = Rect::from_min_max(pos2(from.x, to.y - 7.0), to + half);
+                        painter.rect_filled(v.expand2(vec2(2.0, 0.0)), 0.0, fill);
+                        painter.rect_filled(h, 0.0, fill);
+                    }
+                }
+            }
 
             for (&seg, node) in &nodes {
                 let on_path = path.contains(&seg);
@@ -509,7 +644,7 @@ impl App {
                 let tokens = notation::parse(&s.text).tokens;
                 let mut open_xs = vec![];
                 for (i, t) in tokens.iter().enumerate() {
-                    let c = at(node, (i + 1) as f32 * STEP);
+                    let c = at(node, (i + 1) as f32 * MAP_STEP);
                     let col = token_color(t.kind).gamma_multiply(if on_path { 1.0 } else { 0.55 });
                     match t.kind {
                         TokenKind::Open => {
@@ -540,42 +675,43 @@ impl App {
                 }
                 stops.push((end, Pos { seg, off: s.text.len() }));
                 if caret.seg == seg {
-                    // Between tokens, or partway into one.
-                    let mut x = 0.0;
-                    for (i, t) in tokens.iter().enumerate() {
-                        if t.span.end <= caret.off {
-                            x = (i + 1) as f32 * STEP;
-                        } else if t.span.start < caret.off {
-                            x = (i as f32 + 0.5) * STEP;
-                        }
-                    }
-                    if caret.off == s.text.len() {
-                        x = node.len;
-                    }
-                    let c = at(node, x);
-                    let stroke = Stroke::new(2.0, Color32::WHITE);
-                    painter.line_segment([c - vec2(0.0, 10.0), c + vec2(0.0, 10.0)], stroke);
+                    let c = at(node, map_x(&s.text, caret.off));
+                    painter.line_segment([c - vec2(0.0, 10.0), c + vec2(0.0, 10.0)], CARET);
                 }
             }
 
             let pointer = r.interact_pointer_pos().or(r.hover_pos())?;
-            let scrubbing = r.dragged();
-            let nearest = stops
-                .iter()
-                .filter(|(_, p)| !scrubbing || path.contains(&p.seg))
-                .min_by(|a, b| a.0.distance(pointer).total_cmp(&b.0.distance(pointer)))?;
-            if scrubbing {
-                return Some((nearest.1, false));
+            let nearest_to = |p: Pos2, path_only: bool| {
+                stops
+                    .iter()
+                    .filter(|(_, pos)| !path_only || path.contains(&pos.seg))
+                    .min_by(|a, b| a.0.distance(p).total_cmp(&b.0.distance(p)))
+                    .copied()
+            };
+            let shift = ui.input(|i| i.modifiers.shift);
+            if r.dragged_by(egui::PointerButton::Primary) {
+                let to = nearest_to(pointer, true)?.1;
+                // Like in text: a drag selects, and Shift extends instead.
+                let origin = ui.input(|i| i.pointer.press_origin());
+                let from = match origin.filter(|_| r.drag_started() && !shift) {
+                    Some(p) => Some(nearest_to(p, true)?.1),
+                    None => None,
+                };
+                return Some(MapAction::Select { from, to });
             }
+            let nearest = nearest_to(pointer, shift)?;
             if nearest.0.distance(pointer) > 12.0 {
                 return None;
             }
             painter.circle_stroke(nearest.0, 7.0, Stroke::new(1.0, Color32::WHITE));
+            if r.clicked() && shift {
+                return Some(MapAction::Select { from: None, to: nearest.1 });
+            }
             if r.double_clicked() {
-                return Some((nearest.1, true));
+                return Some(MapAction::Shorten(nearest.1));
             }
             if r.clicked() {
-                return Some((nearest.1, false));
+                return Some(MapAction::Go(nearest.1));
             }
             let pos = nearest.1;
             *preview = Some(pos);
@@ -583,15 +719,33 @@ impl App {
             r.on_hover_text_at_pointer(egui::RichText::new(hover_text(text, pos.off)).monospace());
             None
         });
-        if let Some((pos, shorten)) = action.inner {
-            if shorten {
-                self.session.set_tip(pos.seg);
+        if let Some(action) = action.inner {
+            match action {
+                MapAction::Go(pos) => self.session.go_to(pos),
+                MapAction::Shorten(pos) => {
+                    self.session.set_tip(pos.seg);
+                    self.session.go_to(pos);
+                }
+                MapAction::Select { from: Some(from), to } => self.session.set_selection(from, to),
+                MapAction::Select { from: None, to } => self.session.extend_to(to),
             }
-            self.session.go_to(pos);
-            ui.ctx().memory_mut(|m| m.surrender_focus(Id::unique("path editor")));
             ui.ctx().request_repaint();
         }
     }
+}
+
+/// Distance between dots on the map.
+const MAP_STEP: f32 = 12.0;
+
+/// How far along its segment an offset is on the map.
+fn map_x(text: &str, off: usize) -> f32 {
+    let tokens = notation::parse(text).tokens;
+    if off == text.len() {
+        return (tokens.len() + 1) as f32 * MAP_STEP;
+    }
+    let done = tokens.iter().filter(|t| t.span.end <= off).count();
+    let partway = tokens.iter().any(|t| t.span.start < off && off < t.span.end);
+    (done as f32 + if partway { 0.5 } else { 0.0 }) * MAP_STEP
 }
 
 fn hover_text(text: &str, off: usize) -> String {

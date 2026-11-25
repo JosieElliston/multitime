@@ -8,7 +8,7 @@
 
 ## use
 
-`cargo run [file]` (default `solve.txt`). Esc leaves the text box. Hold either Shift for two-layer face turns. Outside the text box, Backspace undoes, Shift+Backspace redoes, and the arrow keys scrub. Right-click a sticker to turn its face clockwise, left-click for counterclockwise, and drag to orbit. Drag on the map to scrub, and double-click a dot to shorten the text box to its segment.
+`cargo run [file]` (default `solve.txt`). Esc cycles between typing and twisting in either view; clicking the text box or a puzzle also switches. Hold either Shift for two-layer face turns. When twisting, the arrow keys scrub. Right-click a sticker to turn its face clockwise, left-click for counterclockwise, and drag to orbit. Click on the map to move the caret, and double-click a dot to shorten the text box to its segment. Drag on the map to select a stretch of the path, or Shift+click to extend to there from the caret. Clipboard and selection keys work in every mode, but Backspace and Delete only when typing. Cmd+Z undoes and Cmd+Shift+Z redoes. Copying leaves out the `>` lines.
 
 | Keys (physical QWERTY positions) | Moves in the same order |
 | --- | --- |
