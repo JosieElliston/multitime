@@ -404,7 +404,15 @@ impl App {
             text.char_indices().nth(n).map_or(text.len(), |(i, _)| i)
         };
         if out.response.changed() {
-            self.session.edit(&text, range.map_or(text.len(), |r| byte(r.primary)));
+            let caret = range.map_or(text.len(), |r| byte(r.primary));
+            let clipboard = ui.input(|i| {
+                i.events.iter().any(|e| matches!(e, Event::Cut | Event::Paste(_)))
+            });
+            if clipboard {
+                self.session.edit_once(&text, caret);
+            } else {
+                self.session.edit(&text, caret);
+            }
             return; // the rest of the layout is stale
         }
         if let Some(r) = range

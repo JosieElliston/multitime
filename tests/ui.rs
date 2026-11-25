@@ -354,6 +354,11 @@ fn clipboard_while_twisting() {
     h.event(Event::Paste(clip));
     h.run_steps(3);
     assert_eq!(file(&h), "R U\n>\n  F B\n");
+    // Each is its own undo step.
+    key(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(file(&h), "R B\n");
+    key(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    assert_eq!(file(&h), "R U\n>\n  F B\n");
     // Pasting text without the fork.
     key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
     key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);

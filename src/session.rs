@@ -224,10 +224,7 @@ impl Session {
             text.replace_range(start..start + seg.len(), &new);
             start + off
         };
-        // Not coalesced with typing.
-        self.typing = None;
-        self.edit(&text, caret);
-        self.typing = None;
+        self.edit_once(&text, caret);
     }
     fn delete_fork(&mut self, forward: bool) {
         let path = self.doc.path(self.tip);
@@ -253,6 +250,12 @@ impl Session {
         self.record(before);
     }
 
+    /// Like `edit`, but always its own undo step.
+    pub fn edit_once(&mut self, new: &str, caret: usize) {
+        self.typing = None;
+        self.edit(new, caret);
+        self.typing = None;
+    }
     /// Applies an edit made in the path's text box.
     pub fn edit(&mut self, new: &str, caret: usize) {
         self.anchor = None;
