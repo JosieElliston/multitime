@@ -678,42 +678,20 @@ impl App {
         } else if let Some(r) = range
             && (byte(r.primary), byte(r.secondary)) != (caret, anchor)
         {
-            let mut new = byte(r.primary);
             let pointer = ui.input(|i| i.pointer.primary_down() || i.pointer.any_released());
-            // Up and Down (which set `h_pos`) onto a bubble's line go to its
-            // active branch's mark, since anywhere else would switch branches.
-            if r.h_pos.is_some() && !pointer {
-                for (b, seg) in self.session.bubbles() {
-                    if b.start < new && new < b.end {
-                        let sibs = self.session.doc().siblings(seg);
-                        new = b.start + 2 + sibs.iter().position(|s| *s == seg).expect("sibling");
-                    }
-                }
+            let mut new = byte(r.primary);
+            if !pointer {
+                new = self.session.key_offset(caret, new, r.h_pos.is_some());
             }
             let from = byte(r.secondary);
-            // A selection from outside of a bubble goes over all of it or none
-            // of it: to the nearer side for the pointer, and for keys, past it.
-            let outside = self
-                .session
-                .bubbles()
-                .into_iter()
-                .all(|(b, _)| !(b.start < from && from < b.end));
-            if !r.is_empty() && outside {
-                for (b, _) in self.session.bubbles() {
-                    if b.start < new && new < b.end {
-                        let past = if pointer {
-                            new - b.start > b.end - new
-                        } else {
-                            new > caret
-                        };
-                        new = if past { b.end } else { b.start };
-                    }
-                }
-            }
             if r.is_empty() || new == from {
                 self.session.set_caret_offset(new);
             } else {
-                self.session.select_offsets(from, new);
+                // A selection from outside of a bubble goes over all of it or
+                // none of it: to the nearer side for the pointer, and for
+                // keys, past it.
+                let after = (!pointer).then_some(new > caret);
+                self.session.select_offsets(from, new, after);
             }
             ui.ctx().request_repaint();
             if self.session.text() != text {
@@ -761,14 +739,13 @@ impl App {
         }
 
         let mut clicked = None;
-        for (range, seg) in self.session.bubbles() {
-            // The start of its line.
-            let index = egui::text::CCursor::new(text[..range.start + 1].chars().count());
+        for b in self.session.bubbles() {
+            let index = egui::text::CCursor::new(text[..b.line].chars().count());
             let rect = out
                 .galley
                 .pos_from_cursor(index)
                 .translate(out.galley_pos.to_vec2());
-            self.bubble(ui, rect.left_center(), seg, &mut clicked, preview);
+            self.bubble(ui, rect.left_center(), b.seg, &mut clicked, preview);
         }
         if let Some(seg) = clicked {
             self.session.enter(seg);

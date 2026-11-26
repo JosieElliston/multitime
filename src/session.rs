@@ -24,31 +24,61 @@ impl InversionMode {
 }
 
 /// The text box's text is the segments of the path, with a fork between two of
-/// them written as a bubble on a line of its own: an `OPEN` line break, a `MARK`
-/// for each branch, and an `END` line break. Neither line break is part of a
-/// segment. Every caret position on a bubble's line is in the bubble: before
-/// its first `>`, or after one of them, whose branch is then the active one.
+/// them written as a bubble on a line of its own: a `MARK` for each branch,
+/// with line breaks that only separate it from other lines: an `OPEN` if
+/// there's any text before it, and an `END` if its branch has text. So an
+/// empty segment has no line. Neither line break is part of a segment.
+///
+/// A branch's start is right after its `>`, and the start of its first line
+/// isn't a caret position. The only other one on a bubble's line is before its
+/// first `>`.
 pub const OPEN: char = '\x03';
 pub const MARK: char = '\x01';
 pub const END: char = '\x02';
 
-/// Where the caret is on the line of the bubble before its segment, if it is.
+/// Whether the caret is before the first `>` of the bubble before its segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inside {
-    /// Not on it.
     No,
-    /// Before the first `>`. The segment is any of the bubble's branches.
+    /// The segment is any of the bubble's branches.
     Start,
-    /// Right after the segment's `>`.
-    Mark,
 }
 
 /// A stretch of the text box's text. A bubble's is the one before its segment.
 struct Span {
     seg: SegId,
+    /// The end of the parent.
     bubble: usize,
+    /// The start of the bubble's line, before its first `>`.
+    line: usize,
+    /// The start of the segment's text.
     start: usize,
     end: usize,
+}
+
+/// Where a bubble is in the text box's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bubble {
+    /// From the end of the parent to the start of the active branch's text.
+    pub range: Range<usize>,
+    /// The start of its line, before its first `>`.
+    pub line: usize,
+    /// How many branches it has.
+    pub n: usize,
+    /// The active branch, and its index.
+    pub seg: SegId,
+    pub active: usize,
+}
+
+impl Bubble {
+    /// The caret positions on its line.
+    pub fn marks(&self) -> std::ops::RangeInclusive<usize> {
+        self.line..=self.line + self.n
+    }
+    /// Where the caret is after the active branch's `>`.
+    pub fn active_mark(&self) -> usize {
+        self.line + 1 + self.active
+    }
 }
 
 /// One end of a selection: a position, and where it is on a bubble's line.
@@ -113,8 +143,31 @@ impl Session {
     pub fn inside(&self) -> Inside {
         self.inside
     }
-    fn in_bubble(&self) -> bool {
-        self.inside != Inside::No
+    fn at_start(&self) -> bool {
+        self.inside == Inside::Start
+    }
+    /// Whether the caret is at a branch's start, right after its `>`.
+    fn at_mark(&self) -> bool {
+        self.inside == Inside::No
+            && self.caret.off == 0
+            && self.doc.get(self.caret.seg).parent.is_some()
+    }
+    /// Whether a spot is on a bubble's line: whose parent, if so.
+    fn bubble_of(&self, (pos, inside): Spot) -> Option<SegId> {
+        let parent = self.doc.get(pos.seg).parent?;
+        (inside == Inside::Start || pos.off == 0).then_some(parent)
+    }
+    /// Whether the selection is of `>`s in a bubble.
+    fn bubble_selection(&self) -> bool {
+        self.anchor.is_some_and(|a| {
+            let b = self.bubble_of(a);
+            b.is_some() && b == self.bubble_of((self.caret, self.inside))
+        })
+    }
+    /// Whether the selection is of text, so that any branch start in it is
+    /// at the start of its first line.
+    fn text_selection(&self) -> bool {
+        self.anchor.is_some() && !self.bubble_selection()
     }
 
     /// Makes the path go through a segment, and then through active branches.
@@ -132,12 +185,9 @@ impl Session {
             self.active.insert(pair[0], pair[1]);
         }
     }
-    /// Puts the caret inside of a bubble, right after the branch's mark.
+    /// Puts the caret at a branch's start, right after its `>`.
     pub fn enter(&mut self, seg: SegId) {
         self.go_to(Pos { seg, off: 0 });
-        if self.doc.get(seg).parent.is_some() {
-            self.inside = Inside::Mark;
-        }
     }
     /// Puts the caret in the bubble before a segment, before its first mark,
     /// keeping the active branch.
@@ -161,7 +211,6 @@ impl Session {
     fn place(&mut self, (pos, inside): Spot) {
         match inside {
             Inside::No => self.go_to(pos),
-            Inside::Mark => self.enter(pos.seg),
             Inside::Start => self.enter_start(pos.seg),
         }
     }
@@ -270,37 +319,75 @@ impl Session {
     }
     /// The anchor's offset in the text.
     pub fn anchor_offset(&self) -> usize {
-        self.spot_offset(self.anchor_spot()).expect("on path")
+        self.spot_offset(self.anchor_spot(), !self.text_selection())
+            .expect("on path")
     }
     /// Moves the caret to an offset in the text.
     pub fn set_caret_offset(&mut self, off: usize) {
         self.place(self.at_offset(off));
     }
     /// Selects between two offsets in the text, leaving the caret at the
-    /// second. A selection that starts in a bubble stays in it, and one that
-    /// starts outside of a bubble goes all the way over it or not at all.
-    pub fn select_offsets(&mut self, anchor: usize, caret: usize) {
-        let a = self.at_offset(anchor);
-        let bubble = self
-            .bubbles()
-            .into_iter()
-            .find(|(r, _)| r.start < caret && caret < r.end);
-        let caret = if a.1 != Inside::No {
-            let (r, _) = self
-                .bubbles()
-                .into_iter()
-                .find(|(r, _)| r.start < anchor && anchor < r.end)
-                .expect("in a bubble");
-            caret.clamp(r.start + 1, r.end - 1)
-        } else if let Some((r, _)) = bubble {
-            if anchor <= r.start { r.start } else { r.end }
+    /// second. A selection that starts on a bubble's line stays on it, unless
+    /// it's from a branch's start into its text. One from outside goes all the
+    /// way over a bubble or not at all: past it if `after`, or else to the
+    /// nearer side.
+    pub fn select_offsets(&mut self, anchor: usize, caret: usize, after: Option<bool>) {
+        // The anchor as it is, if it's the same, since a branch's start can be
+        // either on its bubble's line or at the start of its text.
+        let (a, text_anchor) = if anchor == self.anchor_offset() {
+            (self.anchor_spot(), self.text_selection())
         } else {
-            caret
+            (self.at_offset(anchor), false)
         };
-        self.set_caret_offset(caret);
-        if caret != anchor {
+        let bubbles = self.bubbles();
+        let mut spot = None;
+        if !text_anchor && let Some(parent) = self.bubble_of(a) {
+            let b = bubbles
+                .iter()
+                .find(|b| self.doc.get(b.seg).parent == Some(parent))
+                .expect("on path");
+            let m = b.marks();
+            // Only the active branch's text is below its line.
+            if a.1 == Inside::Start || a.0.seg != b.seg || caret <= *m.end() {
+                spot = Some(self.at_offset(caret.clamp(*m.start(), *m.end())));
+            }
+        }
+        let spot =
+            spot.unwrap_or_else(
+                || match bubbles.iter().find(|b| b.marks().contains(&caret)) {
+                    Some(b) => {
+                        let r = &b.range;
+                        if after.unwrap_or(caret - r.start > r.end - caret) {
+                            (Pos { seg: b.seg, off: 0 }, Inside::No)
+                        } else {
+                            let parent = self.doc.get(b.seg).parent.expect("bubbles have parents");
+                            (self.doc.end(parent), Inside::No)
+                        }
+                    }
+                    None => self.at_offset(caret),
+                },
+            );
+        self.place(spot);
+        if (self.caret, self.inside) != a {
             self.anchor = Some(a);
         }
+    }
+    /// Where a key that moved the text box's caret from `old` to `new` puts
+    /// it instead. Up or Down (`vertical`) onto a bubble's line goes to after
+    /// its active `>`, since anywhere else would switch branches. Forward onto
+    /// the start of a branch's first line, which isn't a caret position, goes
+    /// past the first character.
+    pub fn key_offset(&self, old: usize, new: usize, vertical: bool) -> usize {
+        for b in self.bubbles() {
+            if vertical && b.marks().contains(&new) {
+                return b.active_mark();
+            }
+            if new == b.range.end && new > *b.marks().end() && old < new {
+                let text = &self.doc.get(b.seg).text;
+                return new + text.chars().next().map_or(0, char::len_utf8);
+            }
+        }
+        new
     }
     /// Ends of the unit that a click on the character at `pos` selects. Off a
     /// segment's end, that's the bubble after it.
@@ -321,9 +408,9 @@ impl Session {
     /// The same for the character at an offset in the text box. A bubble's
     /// unit is the bubble, keeping its active branch.
     pub fn unit_at_offset(&self, off: usize, unit: Unit) -> Option<(Pos, Pos)> {
-        if let Some((_, seg)) = self.bubbles().into_iter().find(|(r, _)| r.contains(&off)) {
-            let parent = self.doc.get(seg).parent.expect("bubbles have parents");
-            return Some((self.doc.end(parent), Pos { seg, off: 0 }));
+        if let Some(b) = self.bubbles().into_iter().find(|b| b.range.contains(&off)) {
+            let parent = self.doc.get(b.seg).parent.expect("bubbles have parents");
+            return Some((self.doc.end(parent), Pos { seg: b.seg, off: 0 }));
         }
         self.unit_at(self.at_offset(off).0, unit)
     }
@@ -400,7 +487,7 @@ impl Session {
             seg,
             off: notation::gap_offset(text, gap),
         };
-        if self.in_bubble() && forward {
+        if self.at_start() && forward {
             return self.caret;
         }
         if forward {
@@ -442,7 +529,7 @@ impl Session {
     /// before it, or the end of the one after it. A fork counts as a token, and
     /// passing it keeps the branch.
     pub fn step_word(&mut self, forward: bool, extend: bool) {
-        if self.in_bubble() {
+        if self.at_start() {
             self.step_bubble(forward);
             return;
         }
@@ -486,7 +573,7 @@ impl Session {
             seg,
             off: notation::gap_offset(text, gap),
         };
-        if self.in_bubble() {
+        if self.at_start() {
             self.stepped(forward)
         } else if forward && gap < n {
             at(notation::run_gap(text, gap, true))
@@ -516,12 +603,12 @@ impl Session {
             }
         };
         if forward {
-            if self.in_bubble() || off < end(seg).off {
+            if self.at_start() || off < end(seg).off {
                 end(seg)
             } else {
                 path.get(i + 1).map_or(self.caret, |&next| end(next))
             }
-        } else if off > 0 && !self.in_bubble() {
+        } else if off > 0 && !self.at_start() {
             Pos { seg, off: 0 }
         } else {
             let prev = path[..i].last().copied().unwrap_or(seg);
@@ -541,13 +628,14 @@ impl Session {
         self.move_caret(pos, extend);
     }
 
-    /// Moves the caret between the sides of a bubble and its active branch.
-    /// Returns whether there's a bubble there.
+    /// Moves the caret between the sides of a bubble: from the end of the
+    /// parent to the start of the active branch, or back, and from before its
+    /// first `>` to either. Returns whether there's a bubble there.
     pub fn step_bubble(&mut self, forward: bool) -> bool {
         let Pos { seg, off } = self.caret;
         let path = self.doc.path(self.tip);
         let i = path.iter().position(|s| *s == seg).expect("caret on path");
-        if self.in_bubble() {
+        if self.at_start() {
             let pos = if forward {
                 self.caret
             } else {
@@ -555,7 +643,7 @@ impl Session {
             };
             self.go_to(pos);
         } else if !forward && off == 0 && i > 0 {
-            self.enter(seg);
+            self.go_to(self.doc.end(path[i - 1]));
         } else if let Some(&next) = path.get(i + 1)
             && forward
             && self.caret == self.doc.end(seg)
@@ -577,7 +665,7 @@ impl Session {
             self.run_stop(forward)
         };
         let Pos { seg, off } = self.caret;
-        if self.anchor.is_some() || self.in_bubble() || to.seg != seg {
+        if self.anchor.is_some() || self.at_start() || to.seg != seg {
             self.delete(forward);
             return;
         }
@@ -598,31 +686,31 @@ impl Session {
         self.record(before);
     }
 
-    /// Deletes the selection, or else one token. A bubble counts as a token.
+    /// Deletes the selection, or else one token. At a branch's start, that's
+    /// its `>`, like Backspace in the text box, and at the end of a segment,
+    /// the bubble after it.
     pub fn delete(&mut self, forward: bool) {
         let before = self.snapshot();
         let (a, c) = (self.anchor_offset(), self.caret_offset());
         let Pos { seg, off } = self.caret;
+        let path = self.doc.path(self.tip);
+        let i = path.iter().position(|s| *s == seg).expect("caret on path");
         if a != c {
             self.remove(a.min(c), a.max(c), true);
-        } else if self.in_bubble() {
-            if !forward {
+        } else if self.at_start() {
+            if !forward && c > 0 {
                 self.remove(c - 1, c, false);
             }
         } else if let Some((new, off)) = notation::delete(&self.doc.get(seg).text, off, forward) {
             self.doc.set_text(seg, new);
             self.caret.off = off;
-        } else {
-            let path = self.doc.path(self.tip);
-            let i = path.iter().position(|s| *s == seg).expect("caret on path");
-            let bubble = if forward {
-                path.get(i + 1).copied()
-            } else {
-                Some(seg)
-            };
-            if let Some(seg) = bubble {
-                self.join_into_parent(seg);
+        } else if forward {
+            if let Some(&next) = path.get(i + 1) {
+                self.join_into_parent(next);
             }
+        } else if i > 0 {
+            let m = self.offset_of(Pos { seg, off: 0 }).expect("on path");
+            self.remove(m - 1, m, false);
         }
         self.record(before);
     }
@@ -636,13 +724,18 @@ impl Session {
             let s = self.doc.get(seg);
             let bubble = at;
             if s.parent.is_some() {
-                at += self.doc.siblings(seg).len() + 2;
+                at += usize::from(at > 0);
+            }
+            let line = at;
+            if s.parent.is_some() {
+                at += self.doc.siblings(seg).len() + usize::from(!s.text.is_empty());
             }
             let start = at;
             at += s.text.len();
             Span {
                 seg,
                 bubble,
+                line,
                 start,
                 end: at,
             }
@@ -653,98 +746,104 @@ impl Session {
         let mut out = String::new();
         for s in self.spans() {
             if s.start > s.bubble {
-                out.push(OPEN);
-                out.extend(std::iter::repeat_n(MARK, s.start - s.bubble - 2));
-                out.push(END);
+                if s.line > s.bubble {
+                    out.push(OPEN);
+                }
+                let n = self.doc.siblings(s.seg).len();
+                out.extend(std::iter::repeat_n(MARK, n));
+                if s.start > s.line + n {
+                    out.push(END);
+                }
             }
             out.push_str(&self.doc.get(s.seg).text);
         }
         out
     }
-    /// Offset in the text, if it's on the path.
+    /// Offset in the text, if it's on the path, or the start of a branch of a
+    /// bubble on it. A branch's start is after its `>`.
     pub fn offset_of(&self, pos: Pos) -> Option<usize> {
-        self.spans()
-            .iter()
-            .find(|s| s.seg == pos.seg)
-            .map(|s| s.start + pos.off)
+        self.spot_offset((pos, Inside::No), true)
     }
-    fn offset(&self, pos: Pos) -> usize {
-        self.offset_of(pos).expect("on path")
-    }
-    /// Offset of a spot in the text, if it's there.
-    fn spot_offset(&self, (pos, inside): Spot) -> Option<usize> {
-        if inside == Inside::No {
-            return self.offset_of(pos);
+    /// Offset of a spot in the text, if it's there. A branch's start is after
+    /// its `>` if `marks`, or else at the start of its text.
+    fn spot_offset(&self, (pos, inside): Spot, marks: bool) -> Option<usize> {
+        let spans = self.spans();
+        let on_path = spans.iter().find(|s| s.seg == pos.seg);
+        let on_line = inside == Inside::Start
+            || (pos.off == 0
+                && self.doc.get(pos.seg).parent.is_some()
+                && (marks || on_path.is_none()));
+        if !on_line {
+            return on_path.map(|s| s.start + pos.off);
         }
-        let parent = self.doc.get(pos.seg).parent?;
-        let sibs = &self.doc.get(parent).children;
-        let s = self.spans().into_iter().find(|s| sibs.contains(&s.seg))?;
+        let sibs = self.doc.siblings(pos.seg);
+        let s = spans.iter().find(|s| sibs.contains(&s.seg))?;
         Some(match inside {
-            Inside::Start => s.bubble + 1,
-            _ => s.bubble + 2 + sibs.iter().position(|c| *c == pos.seg)?,
+            Inside::Start => s.line,
+            Inside::No => s.line + 1 + sibs.iter().position(|c| *c == pos.seg)?,
         })
     }
     pub fn caret_offset(&self) -> usize {
-        self.spot_offset((self.caret, self.inside))
+        self.spot_offset((self.caret, self.inside), !self.text_selection())
             .expect("on path")
     }
     /// The position at an offset in the text, and where it is on a bubble's
     /// line. Before a bubble's first mark, the position is the active branch's.
+    /// The start of a branch's first line is its start, after its `>`.
     pub fn at_offset(&self, off: usize) -> (Pos, Inside) {
-        for s in self.spans() {
-            if off < s.start {
-                let gap = off - s.bubble - 1;
-                if gap == 0 {
-                    return (Pos { seg: s.seg, off: 0 }, Inside::Start);
-                }
-                let sibs = self.doc.siblings(s.seg);
-                return (
-                    Pos {
-                        seg: sibs[gap - 1],
-                        off: 0,
-                    },
-                    Inside::Mark,
-                );
+        for b in self.bubbles() {
+            if b.marks().contains(&off) {
+                return match off - b.line {
+                    0 => (Pos { seg: b.seg, off: 0 }, Inside::Start),
+                    i => {
+                        let seg = self.doc.siblings(b.seg)[i - 1];
+                        (Pos { seg, off: 0 }, Inside::No)
+                    }
+                };
             }
+        }
+        for s in self.spans() {
             if off <= s.end {
-                return (
-                    Pos {
-                        seg: s.seg,
-                        off: off - s.start,
-                    },
-                    Inside::No,
-                );
+                let off = off.saturating_sub(s.start);
+                return (Pos { seg: s.seg, off }, Inside::No);
             }
         }
         (self.doc.end(self.tip), Inside::No)
     }
-    /// Each bubble's extent in the text, from the end of the line before it to
-    /// the start of the line after it, and its active branch.
-    pub fn bubbles(&self) -> Vec<(std::ops::Range<usize>, SegId)> {
+    /// Where each bubble is in the text.
+    pub fn bubbles(&self) -> Vec<Bubble> {
         self.spans()[1..]
             .iter()
-            .map(|s| (s.bubble..s.start, s.seg))
+            .map(|s| {
+                let sibs = self.doc.siblings(s.seg);
+                Bubble {
+                    range: s.bubble..s.start,
+                    line: s.line,
+                    n: sibs.len(),
+                    seg: s.seg,
+                    active: sibs.iter().position(|c| *c == s.seg).expect("sibling"),
+                }
+            })
             .collect()
     }
 
     /// Deletes a range of the text. Within a bubble's marks, that's their
     /// branches, but a lone `>` that isn't `selected` keeps its text. A bubble's
-    /// line break, from outside of it, deletes it the same way, and from
-    /// inside, nothing.
+    /// line break before it, from outside of it, deletes it the same way, and
+    /// from before its first `>`, a blank line before it. The one after it
+    /// deletes the first character of the branch.
     fn remove(&mut self, mut a: usize, mut b: usize, selected: bool) {
-        let was_inside = self.in_bubble();
-        for (r, seg) in self.bubbles() {
+        let at_start = self.at_start();
+        for bubble in self.bubbles() {
+            let (r, seg) = (bubble.range.clone(), bubble.seg);
             let touches = a < r.end && r.start < b;
             if !touches || (a <= r.start && r.end <= b) {
                 continue;
             }
-            let marks = r.start + 1..r.end - 1;
+            let marks = bubble.line..bubble.line + bubble.n;
             if marks.start <= a && b <= marks.end {
                 let sibs = self.doc.siblings(seg).to_vec();
                 let range = a - marks.start..b - marks.start;
-                if range.is_empty() {
-                    return;
-                }
                 if range.len() == sibs.len() {
                     if !selected {
                         self.join_into_parent(seg);
@@ -774,11 +873,23 @@ impl Session {
                 }
                 return;
             }
-            if b - a == 1 && !selected && (a == r.start || b == r.end) {
-                if !was_inside {
-                    self.join_into_parent(seg);
+            if b - a == 1 && !selected {
+                let parent = self.doc.get(seg).parent.expect("in a bubble");
+                if a == r.start && r.start < bubble.line {
+                    if !at_start {
+                        self.join_into_parent(seg);
+                    } else if let Some(t) = self.doc.get(parent).text.strip_suffix('\n') {
+                        self.doc.set_text(parent, t.to_owned());
+                    }
+                    return;
                 }
-                return;
+                if a == marks.end && b == r.end {
+                    let text = &self.doc.get(seg).text;
+                    let n = text.chars().next().map_or(0, char::len_utf8);
+                    self.doc.set_text(seg, text[n..].to_owned());
+                    self.go_to(Pos { seg, off: 0 });
+                    return;
+                }
             }
             (a, b) = (a.min(r.start), b.max(r.end));
         }
@@ -800,74 +911,75 @@ impl Session {
         self.inside = Inside::No;
     }
     /// Types a character at the caret. A `>` outside of a comment makes a
-    /// bubble, or on a bubble's line, another branch. Anything else before a
-    /// bubble's first mark goes on a line of its own before the bubble.
+    /// bubble, or at a branch's start, a branch after it. Anything else before
+    /// a bubble's first mark goes on a line of its own before the bubble.
     fn type_char(&mut self, c: char) {
         let Pos { seg, off } = self.caret;
         let parent = self.doc.get(seg).parent;
-        let new = match (c, self.inside) {
-            ('>', Inside::Mark) => self.doc.add_sibling(seg),
-            ('>', Inside::Start) => Some(self.doc.insert_child(parent.expect("in a bubble"), 0)),
-            ('>', Inside::No) if !notation::parse(&self.doc.get(seg).text[..off]).in_comment => {
+        let at_start = self.at_start();
+        if at_start && c != '>' {
+            let p = parent.expect("in a bubble");
+            let text = &self.doc.get(p).text;
+            if c == '\n' || !text.is_empty() {
+                self.doc.set_text(p, format!("{text}\n"));
+            }
+            if c != '\n' {
+                self.go_to(self.doc.end(p));
+                self.type_char(c);
+            }
+            return;
+        }
+        let sibling = at_start || self.at_mark();
+        let new = match c {
+            '>' if at_start => Some(self.doc.insert_child(parent.expect("in a bubble"), 0)),
+            '>' if sibling => self.doc.add_sibling(seg),
+            '>' if !notation::parse(&self.doc.get(seg).text[..off]).in_comment => {
                 Some(self.doc.fork_at(seg, off))
-            }
-            ('\n', Inside::Start) => {
-                let p = parent.expect("in a bubble");
-                let mut text = self.doc.get(p).text.clone();
-                text.push('\n');
-                self.doc.set_text(p, text);
-                return;
-            }
-            (_, Inside::Start) => {
-                let p = parent.expect("in a bubble");
-                self.doc.set_text(p, format!("{}\n", self.doc.get(p).text));
-                self.caret = self.doc.end(p);
-                self.inside = Inside::No;
-                return self.type_char(c);
             }
             _ => None,
         };
         if let Some(new) = new {
-            if self.tip == seg || self.in_bubble() {
+            if self.tip == seg || sibling {
                 self.tip = new;
             }
             self.caret = Pos { seg: new, off: 0 };
-            self.inside = Inside::Mark;
+            self.inside = Inside::No;
         } else {
             let mut text = self.doc.get(seg).text.clone();
             text.insert(off, c);
             self.doc.set_text(seg, text);
             self.caret.off += c.len_utf8();
-            self.inside = Inside::No;
         }
     }
     /// Puts text in at the caret as is, and then splits it on any `>`. The
     /// text after the caret goes with the last of the pasted text.
     fn insert(&mut self, text: &str) {
-        if let Some(seg) = (self.inside == Inside::Start).then_some(self.caret.seg) {
-            let parent = self.doc.get(seg).parent.expect("in a bubble");
-            let t = format!("{}\n", self.doc.get(parent).text);
-            self.doc.set_text(parent, t);
-            self.caret = self.doc.end(parent);
+        if self.at_start() {
+            let parent = self.doc.get(self.caret.seg).parent.expect("in a bubble");
+            let t = &self.doc.get(parent).text;
+            if !t.is_empty() {
+                self.doc.set_text(parent, format!("{t}\n"));
+            }
+            self.go_to(self.doc.end(parent));
         }
         let Pos { seg, off } = self.caret;
         let mut t = self.doc.get(seg).text.clone();
         t.insert_str(off, text);
         self.doc.set_text(seg, t);
         self.caret.off += text.len();
-        self.inside = Inside::No;
         self.normalize();
     }
 
     /// Puts brackets around the selection, leaving what was selected selected.
-    /// Returns false, doing nothing, if there's no selection.
+    /// Returns false, doing nothing, if there's no selection of text.
     pub fn wrap(&mut self, open: &str, close: &str) -> bool {
-        let Some((anchor, Inside::No)) = self.anchor else {
+        let Some((anchor, Inside::No)) = self.anchor.filter(|_| self.text_selection()) else {
             return false;
         };
         let before = self.snapshot();
         let caret = self.caret;
-        let backward = self.offset(caret) < self.offset(anchor);
+        let offset = |s: &Self, p| s.spot_offset((p, Inside::No), false).expect("on path");
+        let backward = offset(self, caret) < offset(self, anchor);
         let (mut lo, mut hi) = if backward {
             (caret, anchor)
         } else {
@@ -892,19 +1004,24 @@ impl Session {
         true
     }
 
+    /// Twists at the caret. Before a bubble's first `>`, that's the end of
+    /// the parent.
     pub fn twist(&mut self, mv: &str, inversion: Inversion) {
         let before = self.snapshot();
+        if self.at_start() {
+            let parent = self.doc.get(self.caret.seg).parent.expect("in a bubble");
+            self.go_to(self.doc.end(parent));
+        }
         let text = &self.doc.get(self.caret.seg).text;
         let (text, off) = notation::twist(text, self.caret.off, mv, inversion);
         self.doc.set_text(self.caret.seg, text);
         self.caret.off = off;
-        self.inside = Inside::No;
         self.record(before);
     }
     /// Applies an edit made in the text box, where `caret` is its caret after.
     pub fn edit(&mut self, new: &str, caret: usize) {
         let before = self.snapshot();
-        let selected = self.anchor.take().is_some();
+        let selected = self.anchor.is_some();
         let now = Instant::now();
         let coalesce = self
             .typing
@@ -932,11 +1049,9 @@ impl Session {
             self.remove(prefix, old_head.len(), selected);
             self.show(self.tip);
         } else {
-            (self.caret, self.inside) = self.at_offset(prefix);
-            if self.in_bubble() {
-                self.show(self.caret.seg);
-            }
+            self.place(self.at_offset(prefix));
         }
+        self.anchor = None;
         for c in new_head[prefix..].chars() {
             if !matches!(c, '\r' | OPEN | MARK | END) {
                 self.type_char(c);
@@ -956,28 +1071,28 @@ impl Session {
         self.typing = (!forked).then_some((self.caret, now));
     }
 
-    /// Right before or after a bubble (with only whitespace between), adds a
-    /// branch first or last in it. Otherwise types a `>`, even in a comment or
-    /// in twist mode: splits the text at the caret with a bubble, or in a
-    /// bubble, adds a branch.
+    /// Types a `>`, even in a comment or in twist mode: splits the text at the
+    /// caret with a bubble, or at a branch's start, adds a branch after it.
+    /// Right before a bubble (with only whitespace between), it adds a first
+    /// branch, and right after one, a branch after the caret's.
     pub fn fork(&mut self) {
         let before = self.snapshot();
-        if let Some((parent, index)) = self.beside_bubble() {
+        if self.at_start() || self.at_mark() {
+            self.type_char('>');
+        } else if let Some((parent, index)) = self.beside_bubble() {
             let new = self.doc.insert_child(parent, index);
             self.show(new);
             self.enter(new);
-        } else if self.in_bubble() {
-            self.type_char('>');
         } else {
             let new = self.split_at_gap();
-            (self.caret, self.inside) = (Pos { seg: new, off: 0 }, Inside::Mark);
+            self.go_to(Pos { seg: new, off: 0 });
         }
         self.record(before);
     }
     /// Right beside a bubble, as tokens go, the bubble and the index on that
-    /// side of it.
+    /// side of it: after the caret's branch, or first.
     fn beside_bubble(&self) -> Option<(SegId, usize)> {
-        if self.in_bubble() {
+        if self.at_start() {
             return None;
         }
         let Pos { seg, off } = self.caret;
@@ -989,7 +1104,8 @@ impl Session {
         if gap == 0
             && let Some(parent) = self.doc.get(seg).parent
         {
-            Some((parent, self.doc.get(parent).children.len()))
+            let sibs = self.doc.siblings(seg);
+            Some((parent, 1 + sibs.iter().position(|s| *s == seg)?))
         } else if gap == notation::parse(text).tokens.len() && i + 1 < path.len() {
             Some((seg, 0))
         } else {
@@ -1014,20 +1130,22 @@ impl Session {
         new
     }
     /// Deletes the bubble before the caret's segment, keeping the active
-    /// branch, the same as Backspace right after it in twist mode.
+    /// branch, the same as Delete at the end of the line before it.
     pub fn join(&mut self) {
         let before = self.snapshot();
         self.join_into_parent(self.caret.seg);
         self.record(before);
     }
-    /// Deletes a bubble's line: the parent and the branch are left with the
-    /// line break before it between them.
+    /// Deletes a bubble's line. If the parent and the branch both have text,
+    /// that leaves the line break before it between them.
     fn join_into_parent(&mut self, seg: SegId) {
         let Some(parent) = self.doc.get(seg).parent else {
             return;
         };
-        let text = format!("{}\n", self.doc.get(parent).text);
-        self.doc.set_text(parent, text);
+        let text = &self.doc.get(parent).text;
+        if !text.is_empty() && !self.doc.get(seg).text.is_empty() {
+            self.doc.set_text(parent, format!("{text}\n"));
+        }
         if let Some(start) = self.doc.join(seg) {
             if self.caret.seg == seg {
                 self.caret = Pos {
@@ -1044,10 +1162,10 @@ impl Session {
 
     // ---- the clipboard ----
 
-    /// Which gap between a bubble's marks a spot in it is in.
+    /// Which gap between a bubble's marks a spot on its line is in.
     fn gap_of(&self, (pos, inside): Spot) -> usize {
         match inside {
-            Inside::Mark => {
+            Inside::No => {
                 1 + self
                     .doc
                     .siblings(pos.seg)
@@ -1055,7 +1173,7 @@ impl Session {
                     .position(|s| *s == pos.seg)
                     .expect("is own sibling")
             }
-            _ => 0,
+            Inside::Start => 0,
         }
     }
     fn spot_at_gap(&self, parent: SegId, gap: usize) -> Spot {
@@ -1065,7 +1183,7 @@ impl Session {
                     seg: self.doc.get(parent).children[i],
                     off: 0,
                 },
-                Inside::Mark,
+                Inside::No,
             ),
             None => (
                 Pos {
@@ -1079,14 +1197,17 @@ impl Session {
     /// The bubble that the selection is in, and the indices of its selected
     /// branches.
     fn selected_branches(&self) -> Option<(SegId, Range<usize>)> {
-        let anchor = self.anchor.filter(|a| a.1 != Inside::No)?;
+        if !self.bubble_selection() {
+            return None;
+        }
+        let anchor = self.anchor?;
         let parent = self.doc.get(self.caret.seg).parent?;
         let (a, c) = (self.gap_of(anchor), self.gap_of((self.caret, self.inside)));
         Some((parent, a.min(c)..a.max(c)))
     }
     /// The selection as it's copied, or `None` if there isn't one. Selected
     /// `>`s copy their branches whole, written as in a file. Across a bubble,
-    /// only its active branch is.
+    /// only its active branch is, after a line with its `>`.
     pub fn copy(&self) -> Option<String> {
         let (a, c) = (self.anchor_offset(), self.caret_offset());
         if a == c {
@@ -1096,13 +1217,19 @@ impl Session {
             let branches = &self.doc.get(parent).children[range];
             return Some(self.doc.branches_to_file(branches));
         }
+        let (lo, hi) = (a.min(c), a.max(c));
         let mut out = String::new();
-        for ch in self.text()[a.min(c)..a.max(c)].chars() {
-            match ch {
-                OPEN => out.push_str("\n>"),
-                MARK => {}
-                END => out.push('\n'),
-                ch => out.push(ch),
+        for s in self.spans() {
+            let text = &self.doc.get(s.seg).text;
+            if s.start > s.bubble && lo <= s.bubble && s.start <= hi {
+                out.push_str("\n>");
+                if !text.is_empty() {
+                    out.push('\n');
+                }
+            }
+            let (from, to) = (lo.max(s.start), hi.min(s.end));
+            if from < to {
+                out.push_str(&text[from - s.start..to - s.start]);
             }
         }
         Some(out)
@@ -1136,6 +1263,7 @@ impl Session {
             let (a, c) = (self.anchor_offset(), self.caret_offset());
             self.remove(a.min(c), a.max(c), true);
         }
+        self.anchor = None;
         let Some(src) = branches else {
             self.insert(&text);
             self.record(before);
@@ -1158,36 +1286,30 @@ impl Session {
     /// branch unless there isn't any.
     fn branch_slot(&mut self) -> (SegId, usize) {
         let Pos { seg, .. } = self.caret;
-        match self.inside {
-            Inside::Start => (self.doc.get(seg).parent.expect("in a bubble"), 0),
-            Inside::Mark => {
-                let parent = self.doc.get(seg).parent.expect("in a bubble");
-                (parent, self.gap_of((self.caret, self.inside)))
-            }
-            Inside::No => {
-                if let Some(slot) = self.beside_bubble() {
-                    return slot;
-                }
-                let new = self.split_at_gap();
-                let n = self.doc.get(new);
-                if n.text.is_empty() && n.children.is_empty() {
-                    self.doc.delete(new);
-                    self.tip = seg;
-                }
-                (seg, self.doc.get(seg).children.len())
-            }
+        if self.at_start() {
+            return (self.doc.get(seg).parent.expect("in a bubble"), 0);
         }
+        if let Some(slot) = self.beside_bubble() {
+            return slot;
+        }
+        let new = self.split_at_gap();
+        let n = self.doc.get(new);
+        if n.text.is_empty() && n.children.is_empty() {
+            self.doc.delete(new);
+            self.tip = seg;
+        }
+        (seg, self.doc.get(seg).children.len())
     }
 
     // ---- moving and duplicating lines ----
 
-    /// On a bubble's line, the selected `>`s, or else the one before the
-    /// caret: the bubble, and their indices.
+    /// With the caret at a branch's start, that branch, or else the selected
+    /// `>`s: the bubble, and their indices.
     fn branch_block(&self) -> Option<(SegId, Range<usize>)> {
-        if let Some(b) = self.selected_branches() {
-            return Some(b);
+        if self.anchor.is_some() {
+            return self.selected_branches();
         }
-        if self.inside != Inside::Mark {
+        if !self.at_mark() {
             return None;
         }
         let g = self.gap_of((self.caret, self.inside));
@@ -1206,11 +1328,10 @@ impl Session {
         )
     }
     /// The lines that the selection or caret is on, if they're in one
-    /// segment: it, their extent without the last line break, and the end of
-    /// the selection, which can be at the start of the line after them.
-    fn line_block(&self) -> Option<(SegId, Range<usize>, usize)> {
+    /// segment: it, and their extent without the last line break.
+    fn line_block(&self) -> Option<(SegId, Range<usize>)> {
         let a = self.anchor_spot();
-        if self.in_bubble() || a.1 != Inside::No || a.0.seg != self.caret.seg {
+        if self.at_start() || a.1 != Inside::No || a.0.seg != self.caret.seg {
             return None;
         }
         let seg = self.caret.seg;
@@ -1224,12 +1345,74 @@ impl Session {
         };
         let start = text[..lo].rfind('\n').map_or(0, |i| i + 1);
         let end = text[last..].find('\n').map_or(text.len(), |i| last + i);
-        Some((seg, start..end, hi))
+        Some((seg, start..end))
+    }
+    /// The lines of the text box: `None` for a bubble's, and each segment's
+    /// lines, by their index on the path. An empty segment has none.
+    fn lines(&self) -> Vec<(usize, Option<String>)> {
+        let mut out = vec![];
+        for (k, seg) in self.doc.path(self.tip).into_iter().enumerate() {
+            if k > 0 {
+                out.push((k, None));
+            }
+            let text = &self.doc.get(seg).text;
+            if !text.is_empty() {
+                out.extend(text.split('\n').map(|l| (k, Some(l.to_owned()))));
+            }
+        }
+        out
+    }
+    /// Which line a spot is on, and where on it. An empty branch's start is
+    /// at the end of its bubble's line.
+    fn locate(&self, lines: &[(usize, Option<String>)], (pos, inside): Spot) -> (usize, usize) {
+        let path = self.doc.path(self.tip);
+        let k = path.iter().position(|s| *s == pos.seg).expect("on path");
+        let first = lines.iter().position(|(j, _)| *j == k);
+        let bubble = |at| (first.expect("a bubble's line"), at);
+        let text = &self.doc.get(pos.seg).text;
+        match inside {
+            Inside::Start => bubble(0),
+            _ if text.is_empty() && k > 0 => bubble(1),
+            // An empty root has no line, so that's the first bubble's.
+            _ if text.is_empty() => (0, 0),
+            _ => {
+                let line_start = text[..pos.off].rfind('\n').map_or(0, |i| i + 1);
+                let first = first.expect("has lines") + usize::from(k > 0);
+                (
+                    first + text[..pos.off].matches('\n').count(),
+                    pos.off - line_start,
+                )
+            }
+        }
+    }
+    /// The spot on a line, where `lines` are the text's after moving them.
+    fn spot_on_line(&self, lines: &[(usize, Option<String>)], (line, at): (usize, usize)) -> Spot {
+        let path = self.doc.path(self.tip);
+        let k = lines[..=line].iter().filter(|(_, l)| l.is_none()).count();
+        let seg = path[k];
+        if lines[line].1.is_none() {
+            let inside = if at == 0 { Inside::Start } else { Inside::No };
+            return (Pos { seg, off: 0 }, inside);
+        }
+        let text = &self.doc.get(seg).text;
+        let before = lines[..line]
+            .iter()
+            .rev()
+            .take_while(|(_, l)| l.is_some())
+            .count();
+        let start: usize = text.split('\n').take(before).map(|l| l.len() + 1).sum();
+        (
+            Pos {
+                seg,
+                off: (start + at).min(text.len()),
+            },
+            Inside::No,
+        )
     }
     /// Option+Up or Down: moves the lines that the selection or caret is on
-    /// past the next line, which can be a bubble's. On a bubble's line, it moves
-    /// the selected `>`s, or the one before the caret, among their siblings,
-    /// and before the first, it moves the bubble's line.
+    /// past the next line, which can be a bubble's, so a line goes in or out
+    /// of the active branch. At a branch's start, or with `>`s selected, it
+    /// moves branches among their siblings instead.
     pub fn move_lines(&mut self, down: bool) {
         let before = self.snapshot();
         if let Some((parent, range)) = self.branch_block() {
@@ -1242,104 +1425,80 @@ impl Session {
                 self.doc.move_child(parent, range.start - 1, range.end - 1);
                 self.shift_gaps(parent, gaps, -1);
             }
-        } else if self.inside == Inside::Start {
-            let seg = self.caret.seg;
-            let parent = self.doc.get(seg).parent.expect("in a bubble");
-            if down {
-                let text = &self.doc.get(seg).text;
-                let end = text.find('\n').unwrap_or(text.len());
-                self.move_block(seg, 0..end, end, false);
-            } else {
-                let text = &self.doc.get(parent).text;
-                let start = text.rfind('\n').map_or(0, |i| i + 1);
-                self.move_block(parent, start..text.len(), text.len(), true);
-            }
-            self.enter_start(seg);
-        } else if let Some((seg, block, end)) = self.line_block() {
-            self.move_block(seg, block, end, down);
+        } else {
+            self.move_text_lines(down);
         }
         self.record_keeping_selection(before);
     }
-    /// Moves a segment's lines past the next line, carrying the caret and
-    /// anchor along if they're in them, or up to `end`. Past a bubble, they go
-    /// to the start of the active branch or the end of the parent.
-    fn move_block(&mut self, seg: SegId, block: Range<usize>, end: usize, down: bool) {
-        let text = self.doc.get(seg).text.clone();
-        let lines = &text[block.clone()];
-        let path = self.doc.path(self.tip);
-        let i = path.iter().position(|s| *s == seg).expect("on path");
-        // Where the block's start goes.
-        let to = if down && block.end < text.len() {
-            let next_end = text[block.end + 1..]
-                .find('\n')
-                .map_or(text.len(), |i| block.end + 1 + i);
-            let next = &text[block.end + 1..next_end];
-            let new = format!(
-                "{}{next}\n{lines}{}",
-                &text[..block.start],
-                &text[next_end..]
-            );
-            self.doc.set_text(seg, new);
-            Pos {
-                seg,
-                off: block.start + next.len() + 1,
-            }
-        } else if !down && block.start > 0 {
-            let prev_start = text[..block.start - 1].rfind('\n').map_or(0, |i| i + 1);
-            let prev = &text[prev_start..block.start - 1];
-            let new = format!(
-                "{}{lines}\n{prev}{}",
-                &text[..prev_start],
-                &text[block.end..]
-            );
-            self.doc.set_text(seg, new);
-            Pos {
-                seg,
-                off: prev_start,
-            }
-        } else if text.is_empty() {
-            return;
-        } else if down && let Some(&child) = path.get(i + 1) {
-            self.doc
-                .set_text(seg, text[..block.start.saturating_sub(1)].to_owned());
-            let old = &self.doc.get(child).text;
-            let sep = if old.is_empty() { "" } else { "\n" };
-            self.doc.set_text(child, format!("{lines}{sep}{old}"));
-            Pos { seg: child, off: 0 }
-        } else if !down && i > 0 {
-            let parent = path[i - 1];
-            let rest = text.get(block.end + 1..).unwrap_or("").to_owned();
-            self.doc.set_text(seg, rest);
-            let old = self.doc.get(parent).text.clone();
-            let sep = if old.is_empty() { "" } else { "\n" };
-            self.doc.set_text(parent, format!("{old}{sep}{lines}"));
-            Pos {
-                seg: parent,
-                off: old.len() + sep.len(),
-            }
+    fn move_text_lines(&mut self, down: bool) {
+        let mut lines = self.lines();
+        let caret = self.locate(&lines, (self.caret, self.inside));
+        let anchor = self.anchor.map(|a| self.locate(&lines, a));
+        let a = anchor.unwrap_or(caret);
+        let (lo, hi) = (a.min(caret), a.max(caret));
+        // A selection up to the start of a line doesn't take it in.
+        let excluded = hi.1 == 0 && hi.0 > lo.0 && lines[hi.0].1.is_some();
+        let block = lo.0..hi.0 + usize::from(!excluded);
+        let other = if down {
+            block.end
         } else {
-            return;
-        };
-        let len = self.doc.get(to.seg).text.len();
-        let carry = |p: &mut Pos| {
-            if p.seg == seg && (block.start..=end.max(block.end)).contains(&p.off) {
-                *p = Pos {
-                    seg: to.seg,
-                    off: (to.off + p.off - block.start).min(len),
-                };
+            match block.start.checked_sub(1) {
+                Some(i) => i,
+                None => return,
             }
         };
-        if self.inside == Inside::No {
-            carry(&mut self.caret);
+        let bubbles = |r: Range<usize>| lines[r].iter().any(|(_, l)| l.is_none());
+        if other >= lines.len() || (lines[other].1.is_none() && bubbles(block.clone())) {
+            return;
         }
-        if let Some((a, Inside::No)) = &mut self.anchor {
-            carry(a);
+        let moved = |line: usize| {
+            if block.contains(&line) {
+                if down { line + 1 } else { line - 1 }
+            } else if line == other {
+                if down { block.start } else { block.end - 1 }
+            } else {
+                line
+            }
+        };
+        if down {
+            lines[block.start..=other].rotate_right(1);
+        } else {
+            lines[other..block.end].rotate_left(1);
         }
+        // Each segment's text is the lines up to the next bubble's.
+        let path = self.doc.path(self.tip);
+        let mut texts = vec![vec![]; path.len()];
+        let mut k = 0;
+        for (_, l) in &lines {
+            match l {
+                Some(l) => texts[k].push(l.as_str()),
+                None => k += 1,
+            }
+        }
+        for (seg, t) in path.iter().zip(texts) {
+            self.doc.set_text(*seg, t.join("\n"));
+        }
+        // An end at the start of the line after the block stays after it.
+        let moved = |(line, at): (usize, usize)| {
+            if (line, at) == (block.end, 0) {
+                match lines.get(line + 1) {
+                    _ if !down => (line - 1, 0),
+                    Some(_) => (line + 1, 0),
+                    // Or at the end, if it's last.
+                    None => (line, lines[line].1.as_ref().map_or(1, String::len)),
+                }
+            } else {
+                (moved(line), at)
+            }
+        };
+        let caret = self.spot_on_line(&lines, moved(caret));
+        let anchor = anchor.map(|a| self.spot_on_line(&lines, moved(a)));
+        (self.caret, self.inside) = caret;
+        self.anchor = anchor;
     }
     /// Shift+Option+Up or Down: duplicates the lines that the selection or
-    /// caret is on, leaving it on the upper or lower copy. On a bubble's line,
-    /// it duplicates the selected `>`s, or the one before the caret, and their
-    /// branches.
+    /// caret is on, leaving it on the upper or lower copy. At a branch's
+    /// start, or with `>`s selected, it duplicates branches.
     pub fn duplicate_lines(&mut self, down: bool) {
         let before = self.snapshot();
         if let Some((parent, range)) = self.branch_block() {
@@ -1351,7 +1510,7 @@ impl Session {
             }
             let by = if down { range.len() as isize } else { 0 };
             self.shift_gaps(parent, gaps, by);
-        } else if let Some((seg, block, _)) = self.line_block() {
+        } else if let Some((seg, block)) = self.line_block() {
             let text = &self.doc.get(seg).text;
             let new = format!(
                 "{}\n{}{}",

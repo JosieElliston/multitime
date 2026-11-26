@@ -119,14 +119,14 @@ fn forking_beside_a_bubble() {
         let mut s = full.clone();
         s.set_caret_offset(off);
         s.fork();
-        assert_eq!(show(&s), "R // hi\n[^>|>]\n");
+        assert_eq!(show(&s), "R // hi\n[^>|>]");
     }
     // After it, even after whitespace.
     for off in [10, 11] {
         let mut s = full.clone();
         s.set_caret_offset(off);
         s.fork();
-        assert_eq!(show(&s), "R // hi\n[>^>|]\n");
+        assert_eq!(show(&s), "R // hi\n[>^>|]");
     }
 }
 
@@ -141,7 +141,7 @@ fn forking_is_typing_a_fork() {
     s.fork();
     assert_eq!(show(&s), "R\n[^>|]\nU // hi");
     s.fork();
-    assert_eq!(show(&s), "R\n[>^>|]\n");
+    assert_eq!(show(&s), "R\n[>^>|]");
     s.undo();
     s.undo();
     // Partway through a token, or a comment, it's after it.
@@ -201,7 +201,15 @@ fn show(s: &Session) -> String {
     let mut out = String::new();
     let bubbles = s.bubbles();
     let (a, c) = (s.anchor_offset(), s.caret_offset());
-    let mark = |out: &mut String, i: usize| {
+    let text = s.text();
+    for i in 0..=text.len() {
+        if !text.is_char_boundary(i) {
+            continue;
+        }
+        let bubble = bubbles.iter().find(|b| b.marks().contains(&i));
+        if bubble.is_some_and(|b| b.line == i) {
+            out.push('[');
+        }
         if i == c {
             out.push('|');
         }
@@ -211,28 +219,22 @@ fn show(s: &Session) -> String {
         if a != c && i == a.max(c) {
             out.push('»');
         }
-    };
-    let text = s.text();
-    for (i, ch) in text.char_indices() {
-        mark(&mut out, i);
-        if let Some((r, seg)) = bubbles.iter().find(|b| b.0.contains(&i)) {
-            let sibs = s.doc().siblings(*seg);
-            match ch {
-                OPEN => {
-                    out.push_str("\n[");
-                    continue;
-                }
-                MARK if sibs.get(i - r.start - 1) == Some(seg) => out.push('^'),
-                _ => {}
+        if let Some(b) = bubble {
+            if i == b.line + b.n {
+                out.push(']');
+            } else if i == b.line + b.active {
+                out.push('^');
             }
         }
+        let Some(ch) = text[i..].chars().next() else {
+            break;
+        };
         out.push_str(match ch {
             MARK => ">",
-            END => "]\n",
+            OPEN | END => "\n",
             _ => &text[i..i + ch.len_utf8()],
         });
     }
-    mark(&mut out, text.len());
     out
 }
 /// The offset of the `>` of a branch, after it.
@@ -252,7 +254,7 @@ fn bubbles() {
     typ(&mut s, ">");
     assert_eq!(show(&s), "R\n[^>|]\nU");
     typ(&mut s, ">");
-    assert_eq!(show(&s), "R\n[>^>|]\n");
+    assert_eq!(show(&s), "R\n[>^>|]");
     // Typing continues after the bubble.
     typ(&mut s, "F>D");
     assert_eq!(show(&s), "R\n[>^>]\nF\n[^>]\nD|");
@@ -268,10 +270,11 @@ fn bubbles() {
     s.cycle_sibling(1);
     assert_eq!(show(&s), "R\n[>^>|]\nF\n[^>]\nD");
     // Out of it, and in again.
-    assert!(s.step_bubble(true) && !s.step_bubble(true));
-    assert_eq!(show(&s), "R\n[>^>]\n|F\n[^>]\nD");
-    assert!(s.step_bubble(false) && s.step_bubble(false) && !s.step_bubble(false));
+    assert!(s.step_bubble(false) && !s.step_bubble(false));
     assert_eq!(show(&s), "R|\n[>^>]\nF\n[^>]\nD");
+    assert!(s.step_bubble(true) && !s.step_bubble(true));
+    assert_eq!(show(&s), "R\n[>^>|]\nF\n[^>]\nD");
+    s.step_bubble(false);
     // Switching is at the bubble before the caret, which there isn't.
     s.cycle_sibling(1);
     assert_eq!(show(&s), "R|\n[>^>]\nF\n[^>]\nD");
@@ -306,23 +309,25 @@ fn bubbles() {
     backspace(&mut s);
     assert_eq!(show(&s), "R\n[|^>]\nF\n[^>]\nD");
     s.undo();
-    // Delete, in and at the end of it.
+    // Delete, in it, and after the last `>`, where it's at the branch's
+    // start.
     s.enter(u);
     let o = s.caret_offset();
     replace(&mut s, o..o + 1, "");
     assert_eq!(show(&s), "R\n[^>|]\nU");
     replace(&mut s, o..o + 1, "");
-    assert_eq!(show(&s), "R\n[^>|]\nU");
-    // A line break from after or before it deletes the bubble, keeping the
-    // active branch.
-    for (off, r, want) in [(5, 4..5, "R\n|F\n[^>]\nD"), (1, 1..2, "R|\nF\n[^>]\nD")] {
-        let mut s = full.clone();
-        s.set_caret_offset(off);
-        replace(&mut s, r, "");
-        assert_eq!(show(&s), want);
-        s.undo();
-        assert_eq!(s.doc(), full.doc());
-    }
+    assert_eq!(show(&s), "R\n[^>|]");
+    // The line break before it, from the end of the line before, deletes the
+    // bubble, keeping the active branch.
+    let mut s = full.clone();
+    s.set_caret_offset(1);
+    replace(&mut s, 1..2, "");
+    assert_eq!(show(&s), "R|\nF\n[^>]\nD");
+    s.undo();
+    assert_eq!(s.doc(), full.doc());
+    // The start of the branch's line is its start, after its `>`.
+    s.set_caret_offset(5);
+    assert_eq!(show(&s), "R\n[>^>|]\nF\n[^>]\nD");
     // Everything.
     let mut s = full.clone();
     let n = s.text().len();
@@ -332,7 +337,7 @@ fn bubbles() {
     let mut s = full.clone();
     s.enter(u);
     typ(&mut s, ">");
-    assert_eq!(show(&s), "R\n[>^>|>]\n");
+    assert_eq!(show(&s), "R\n[>^>|>]");
     // By tokens, joining leaves the line break.
     let mut s = Session::new(Doc::new("R>U"));
     s.set_caret_offset(4);
@@ -354,7 +359,7 @@ fn typing_before_the_first_mark() {
     assert_eq!(show(&s), "R U\nx y\n\n[|^>>]\nF");
     // A `>` is a first branch.
     typ(&mut s, ">");
-    assert_eq!(show(&s), "R U\nx y\n\n[^>|>>]\n");
+    assert_eq!(show(&s), "R U\nx y\n\n[^>|>>]");
 }
 
 #[test]
@@ -368,14 +373,14 @@ fn bubbles_and_comments() {
     assert_eq!(show(&s), "// a > b>\n[^>]\nR|");
     // Uncommenting a `>` makes a bubble, in place of the space around it.
     replace(&mut s, 0..2, "");
-    assert_eq!(show(&s), "| a\n[^>]\nb\n[^>]\n\n[^>]\nR");
+    assert_eq!(show(&s), "| a\n[^>]\nb\n[^>]\n[^>]\nR");
 }
 
 #[test]
 fn copying_across_bubbles() {
     // Only the active branch, with its `>` on a line of its own.
     let mut s = Session::new(Doc::from_file("R // hi\n>\n  F\n>\n  D\n").unwrap());
-    s.select_offsets(0, s.text().len());
+    s.select_offsets(0, s.text().len(), None);
     assert_eq!(s.copy().as_deref(), Some("R // hi\n>\nF"));
     // Cut and pasted back, it's the same, but for the other branch.
     let s = Session::new(Doc::from_file("R U\n>\n  F B\n  >\n\n    >\n      D L\n").unwrap());
@@ -387,7 +392,7 @@ fn copying_across_bubbles() {
                 continue;
             }
             let mut s = s.clone();
-            s.select_offsets(a, b);
+            s.select_offsets(a, b, None);
             let Some(clip) = s.cut() else { continue };
             s.paste(&clip);
             s.doc().check();
@@ -412,17 +417,21 @@ fn copying_branches() {
     let (start, after_f) = (mark_offset(&s, f) - 1, mark_offset(&s, f));
     // Whole subtrees, like a file.
     let mut s1 = s.clone();
-    s1.select_offsets(start, after_f);
+    s1.select_offsets(start, after_f, None);
     assert_eq!(show(&s1), "R\n[«^>|»>]\nF\n[^>]\nG");
     let branch = s1.copy().unwrap();
     assert_eq!(branch, ">\n  F\n  >\n    G\n");
     let mut all = s.clone();
-    all.select_offsets(start, after_f + 1);
+    all.select_offsets(start, after_f + 1, None);
     assert_eq!(all.copy().unwrap(), ">\n  F\n  >\n    G\n>\n  D L\n");
-    // A selection that starts in a bubble stays in it.
+    // A selection that starts in a bubble stays in it, but from a branch's
+    // start, it can go into the branch.
     let mut s2 = s.clone();
-    s2.select_offsets(after_f, s2.text().len());
-    assert_eq!(show(&s2), "R\n[>«^>|»]\nD L");
+    s2.select_offsets(after_f, 0, None);
+    assert_eq!(show(&s2), "R\n[|«^>»>]\nF\n[^>]\nG");
+    s2.select_offsets(after_f, s2.text().len(), None);
+    assert_eq!(show(&s2), "R\n[^>>]\n«F\n[^>]\nG|»");
+    assert_eq!(s2.copy().unwrap(), "F\n>\nG");
 
     // Pasted at the end of a leaf, they're its branches.
     let mut s3 = s.clone();
@@ -476,21 +485,46 @@ fn moving_lines() {
     s.go_to(Pos { seg: root, off: 0 });
     s.move_lines(true);
     assert_eq!(show(&s), "B\n|A\n[^>>]\nC\nD");
-    // Past the bubble, into the active branch only.
+    // Past the bubble, into the active branch only. At its start, the caret
+    // is after its `>`.
     s.move_lines(true);
-    assert_eq!(show(&s), "B\n[^>>]\n|A\nC\nD");
+    assert_eq!(show(&s), "B\n[^>|>]\nA\nC\nD");
     assert_eq!(s.doc().to_file(), "B\n>\n  A\n  C\n  D\n>\n  E\n");
     // And back, into the parent.
+    s.go_to(Pos {
+        seg: s.caret().seg,
+        off: 1,
+    });
     s.move_lines(false);
-    assert_eq!(show(&s), "B\n|A\n[^>>]\nC\nD");
-    // The last line of a segment leaves it empty, and moving into an empty
-    // one doesn't add a line.
+    assert_eq!(show(&s), "B\nA|\n[^>>]\nC\nD");
+    // The last line of a segment leaves it without a line, so bubbles can
+    // be next to each other.
     s.move_lines(true);
-    s.go_to(Pos { seg: root, off: 0 });
+    s.go_to(Pos { seg: root, off: 1 });
     s.move_lines(true);
-    assert_eq!(show(&s), "\n[^>>]\n|B\nA\nC\nD");
+    assert_eq!(show(&s), "[^>>]\nB|\nA\nC\nD");
     s.move_lines(false);
-    assert_eq!(show(&s), "|B\n[^>>]\nA\nC\nD");
+    assert_eq!(show(&s), "B|\n[^>>]\nA\nC\nD");
+    let mut s = Session::new(Doc::from_file("R\n>\n  F\n  >\n    D\n").unwrap());
+    s.move_lines(false);
+    assert_eq!(show(&s), "R\n[^>]\nF\nD|\n[^>]");
+    s.go_to(s.doc().end(s.doc().root()));
+    s.move_lines(true);
+    s.move_lines(true);
+    assert_eq!(show(&s), "[^>]\nF\nR|\nD\n[^>]");
+    // Across bubbles, the bubbles' lines move with the rest.
+    let mut s = Session::new(Doc::from_file("A\n>\n  B\n  C\n").unwrap());
+    let b = s.tip();
+    s.set_selection(Pos { seg: root, off: 0 }, Pos { seg: b, off: 1 });
+    s.move_lines(true);
+    assert_eq!(show(&s), "C\n«A\n[^>]\nB|»");
+    s.move_lines(false);
+    assert_eq!(show(&s), "«A\n[^>]\nB|»\nC");
+    // But not past another bubble's line.
+    let mut s = Session::new(Doc::from_file("A\n>\n  >\n    B\n").unwrap());
+    s.set_caret_offset(2);
+    s.move_lines(true);
+    assert_eq!(show(&s), "A\n[|^>]\n[^>]\nB");
     // Several lines, by the selection.
     let mut s = Session::new(Doc::new("A\nB\nC\nD"));
     let root = s.doc().root();
@@ -551,7 +585,7 @@ fn moving_branches() {
     // Several, by the selection.
     let mut s2 = s.clone();
     let start = mark_offset(&s2, kids[0]) - 1;
-    s2.select_offsets(start, start + 2);
+    s2.select_offsets(start, start + 2, None);
     s2.move_lines(true);
     assert_eq!(
         (texts(&s2), show(&s2)),
@@ -629,14 +663,21 @@ fn random_editing() {
                     let mut want = text.clone();
                     want.replace_range(a..b, &ins);
                     replace(&mut s, a..b, &ins);
-                    // Away from bubbles, edits are literal.
+                    // Away from bubbles, edits are literal, but for the line
+                    // breaks around them, which are only between lines.
                     if !text[a..b].contains([OPEN, MARK, END])
                         && !want.contains('>')
                         && !s.text().contains('>')
-                        && (a == 0 || !text[..a].ends_with([OPEN, MARK]))
+                        && !text[..a].ends_with([OPEN, MARK, END])
+                        && !text[a..].starts_with(MARK)
                     {
-                        assert_eq!(s.text(), want);
-                        assert_eq!(s.caret_offset(), a + ins.len());
+                        let strip = |t: &str| t.replace([OPEN, END], "");
+                        let new = s.text();
+                        assert_eq!(strip(&new), strip(&want));
+                        assert_eq!(
+                            strip(&new[..s.caret_offset()]),
+                            strip(&want[..a + ins.len()])
+                        );
                     }
                 }
                 10 => {
@@ -644,7 +685,7 @@ fn random_editing() {
                     s.cycle_sibling(1);
                     let text = s.text();
                     let (a, b) = (rng.off(&text), rng.off(&text));
-                    s.select_offsets(a, b);
+                    s.select_offsets(a, b, None);
                     match rng.below(6) {
                         0 => {
                             if let Some(clip) = s.cut() {
@@ -676,7 +717,15 @@ fn random_editing() {
             assert!(s.doc().path(s.tip()).contains(&s.caret().seg));
             s.eval(s.caret());
             assert!(s.doc().get(s.tip()).children.is_empty());
-            assert_eq!(s.at_offset(s.caret_offset()), (s.caret(), s.inside()));
+            // An empty root has no line, so its end is before the first `>`.
+            let spot = s.at_offset(s.caret_offset());
+            let root = Pos {
+                seg: s.doc().root(),
+                off: 0,
+            };
+            if s.anchor_offset() == s.caret_offset() && s.caret() != root {
+                assert_eq!(spot, (s.caret(), s.inside()));
+            }
             let file = s.doc().to_file();
             assert_eq!(Doc::from_file(&file).unwrap().to_file(), file);
         }
@@ -900,12 +949,10 @@ fn selecting_units_across_bubbles() {
     );
     // A bubble's unit is the bubble.
     let (start, end) = s
-        .unit_at_offset(s.bubbles()[0].0.start, Unit::Token)
+        .unit_at_offset(s.bubbles()[0].range.start, Unit::Token)
         .unwrap();
-    assert_eq!(
-        (s.offset_of(start), s.offset_of(end)),
-        (Some(8), Some(s.bubbles()[0].0.end))
-    );
+    let seg = s.bubbles()[0].seg;
+    assert_eq!((s.offset_of(start), end), (Some(8), Pos { seg, off: 0 }));
 }
 
 #[test]
@@ -1044,15 +1091,16 @@ fn deleting_by_runs_and_segments() {
     s.delete_to(false, true);
     assert_eq!(s.doc().get(segs[1]).text, "");
     s.delete_to(false, true);
-    assert_eq!(s.doc().to_file(), "R U\n\n");
+    assert_eq!(s.doc().to_file(), "R U\n");
 }
 
 #[test]
 fn joining_leaves_a_line_break() {
+    // Only between two lines.
     for (file, want) in [
         ("R U\n>\n  F D\n", "R U\nF D\n"),
         ("R U \n>\n   F D\n", "R U \n F D\n"),
-        ("R U \n>\n", "R U \n\n"),
+        ("R U \n>\n", "R U \n"),
         ("(R\n>\n  )\n", "(R\n)\n"),
         ("R U // c\n>\n  F\n", "R U // c\nF\n"),
     ] {
@@ -1092,7 +1140,7 @@ fn fork_then_join_keeps_the_moves() {
         });
         s.fork();
         let (forked, inside) = (s.caret().seg, s.inside());
-        assert_eq!(inside, Inside::Mark, "{text:?}");
+        assert_eq!((s.caret().off, inside), (0, Inside::No), "{text:?}");
         assert!(
             s.doc().get(forked).text.trim_start() == s.doc().get(forked).text,
             "{text:?}"
@@ -1153,4 +1201,40 @@ fn brackets_wrap_the_selection() {
     s.go_to(at(0));
     assert!(!s.wrap("(", ")"));
     assert_eq!(s.doc().get(root).text, "R (U F)");
+}
+
+#[test]
+fn branch_starts() {
+    // Empty segments have no line, so bubbles can be on adjacent lines.
+    let s = Session::new(Doc::from_file("R\n>\n  >\n    F\n>\n").unwrap());
+    assert_eq!(show(&s), "R\n[^>>]\n[^>]\nF|");
+    let full = Session::new(Doc::from_file("R\n>\n  A\n>\n  B\n").unwrap());
+    let root = full.doc().root();
+    let a = full.doc().get(root).children[0];
+    // Backspace at a branch's start, in twist mode too, deletes its `>`.
+    let mut s = full.clone();
+    s.enter(a);
+    s.delete(false);
+    assert_eq!(show(&s), "R\n[|^>]\nB");
+    s.delete(false);
+    assert_eq!(show(&s), "R\n[|^>]\nB");
+    // The only one keeps its text.
+    s.step(true, false);
+    s.delete(false);
+    assert_eq!(show(&s), "R\n|B");
+    // Cmd+Enter there adds a branch after it.
+    let mut s = full.clone();
+    s.enter(a);
+    s.fork();
+    assert_eq!(show(&s), "R\n[>^>|>]");
+    // Keys: Right from after the last `>` goes past the first character,
+    // and Down onto a bubble's line, after the active `>`.
+    let mut s = full.clone();
+    s.enter(a);
+    let o = s.caret_offset();
+    assert_eq!(s.key_offset(o, o + 2, false), o + 3);
+    assert_eq!(s.key_offset(0, o - 1, true), o);
+    // Selecting from it into its text.
+    s.select_offsets(o, o + 3, Some(true));
+    assert_eq!(show(&s), "R\n[^>>]\n«A|»");
 }
