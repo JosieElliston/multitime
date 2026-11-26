@@ -878,3 +878,42 @@ fn fork_then_join_keeps_the_moves() {
         assert!(a.1 == b.1, "{text:?} -> {joined:?}");
     }
 }
+
+#[test]
+fn brackets_wrap_the_selection() {
+    let mut s = Session::new(Doc::new("R U F"));
+    let root = s.doc().root();
+    let at = |off| Pos { seg: root, off };
+    s.set_selection(at(2), at(5));
+    assert!(s.wrap("(", ")"));
+    assert_eq!(s.doc().get(root).text, "R (U F)");
+    assert_eq!((s.anchor(), s.caret()), (at(3), at(6)));
+    // Backward, and again, keeping the direction.
+    s.set_selection(at(6), at(3));
+    assert!(s.wrap("[", "]"));
+    assert_eq!(s.doc().get(root).text, "R ([U F])");
+    assert_eq!((s.anchor(), s.caret()), (at(7), at(4)));
+    // Undo and redo keep the selection.
+    s.undo();
+    assert_eq!(s.doc().get(root).text, "R (U F)");
+    assert_eq!((s.anchor(), s.caret()), (at(6), at(3)));
+    s.redo();
+    assert_eq!((s.anchor(), s.caret()), (at(7), at(4)));
+    s.undo();
+    // `^` wraps for NISS.
+    assert!(s.wrap("^(", ")"));
+    assert_eq!(s.doc().get(root).text, "R (^(U F))");
+    assert_eq!((s.anchor(), s.caret()), (at(8), at(5)));
+    s.undo();
+    // So does undoing typing over a selection.
+    s.set_selection(at(3), at(6));
+    let mut t = s.text();
+    t.replace_range(3..6, "x");
+    s.edit(&t, 4);
+    s.undo();
+    assert_eq!((s.anchor(), s.caret()), (at(3), at(6)));
+    // Without a selection, it does nothing.
+    s.go_to(at(0));
+    assert!(!s.wrap("(", ")"));
+    assert_eq!(s.doc().get(root).text, "R (U F)");
+}

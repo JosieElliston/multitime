@@ -304,6 +304,19 @@ impl App {
             };
         }
         let Mode::Twist(view) = self.mode else {
+            // An opening bracket, or a `^` for NISS, wraps the selection
+            // instead of replacing it.
+            ui.input_mut(|i| {
+                i.events.retain(|e| {
+                    let (open, close) = match e {
+                        Event::Text(t) if t == "(" => ("(", ")"),
+                        Event::Text(t) if t == "[" => ("[", "]"),
+                        Event::Text(t) if t == "^" => ("^(", ")"),
+                        _ => return true,
+                    };
+                    !self.session.wrap(open, close)
+                });
+            });
             // Option moves and deletes by tokens, as egui would by words.
             let keys = [
                 (Key::ArrowLeft, false),

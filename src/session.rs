@@ -72,6 +72,7 @@ struct Snapshot {
     tip: SegId,
     caret: Pos,
     inside: bool,
+    anchor: Option<Pos>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,13 +166,14 @@ impl Session {
             tip: self.tip,
             caret: self.caret,
             inside: self.inside,
+            anchor: self.anchor,
         }
     }
     fn restore(&mut self, s: Snapshot) {
         (self.doc, self.tip, self.caret, self.inside) = (s.doc, s.tip, s.caret, s.inside);
         self.show(self.tip);
         self.typing = None;
-        self.anchor = None;
+        self.anchor = s.anchor;
     }
     /// Splits on any `>` that edits uncommented, and extends the path to a leaf.
     fn normalize(&mut self) {
@@ -737,6 +739,39 @@ impl Session {
         }
     }
 
+    /// Puts brackets around the selection, leaving what was selected selected.
+    /// Returns false, doing nothing, if there's no selection.
+    pub fn wrap(&mut self, open: &str, close: &str) -> bool {
+        let Some(anchor) = self.anchor else {
+            return false;
+        };
+        let before = self.snapshot();
+        let caret = self.caret;
+        let backward = self.offset(caret) < self.offset(anchor);
+        let (mut lo, mut hi) = if backward {
+            (caret, anchor)
+        } else {
+            (anchor, caret)
+        };
+        // The end first, so that the start's offset still holds.
+        for (pos, c) in [(hi, close), (lo, open)] {
+            let mut text = self.doc.get(pos.seg).text.clone();
+            text.insert_str(pos.off, c);
+            self.doc.set_text(pos.seg, text);
+        }
+        lo.off += open.len();
+        if hi.seg == lo.seg {
+            hi.off += open.len();
+        }
+        self.record(before);
+        if backward {
+            self.set_selection(hi, lo);
+        } else {
+            self.set_selection(lo, hi);
+        }
+        true
+    }
+
     pub fn twist(&mut self, mv: &str, inversion: Inversion) {
         let before = self.snapshot();
         let text = &self.doc.get(self.caret.seg).text;
@@ -755,8 +790,8 @@ impl Session {
     }
     /// Applies an edit made in the text box, where `caret` is its caret after.
     pub fn edit(&mut self, new: &str, caret: usize) {
-        self.anchor = None;
         let before = self.snapshot();
+        self.anchor = None;
         let now = Instant::now();
         let coalesce = self
             .typing
