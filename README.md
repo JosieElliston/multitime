@@ -39,6 +39,7 @@ esc cycles between focus on the text box and the two puzzles.
 | Option+Backspace, Option+Delete | delete a token | delete a run |
 | Cmd+Backspace, Cmd+Delete | delete to the ends of the line | delete to the ends of the segment |
 | Home, End | go to the ends of the line | go to the ends of the path |
+| Tab | insert four spaces | nothing |
 
 ## forks
 

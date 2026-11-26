@@ -353,8 +353,11 @@ impl App {
         if key(cmd, Key::S) {
             self.save();
         }
-        // Would insert a tab or move egui's focus.
-        key(Modifiers::NONE, Key::Tab);
+        // Would insert a tab or move egui's focus. In text mode, it's four
+        // spaces, typed like any other text.
+        if key(Modifiers::NONE, Key::Tab) && self.mode == Mode::Text {
+            ui.input_mut(|i| i.events.push(Event::Text("    ".to_owned())));
+        }
         // Escape cycles: text mode, then twist mode in each view.
         if key(Modifiers::NONE, Key::Escape) {
             self.mode = match self.mode {

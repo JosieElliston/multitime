@@ -1110,3 +1110,17 @@ fn cmd_slash_toggles_comments() {
     key(&mut h, Modifiers::COMMAND, Key::Slash);
     assert_eq!(file(&h), "R U' F\n// B D2\n");
 }
+
+#[test]
+fn tab_types_four_spaces_in_text_mode() {
+    let mut h = build_harness("R U\n", harness_builder());
+    clicks(&mut h, 1, pos2(40.0, 50.0), &[]);
+    key(&mut h, Modifiers::NONE, Key::Home);
+    key(&mut h, Modifiers::NONE, Key::Tab);
+    assert_eq!(file(&h), "    R U\n");
+    // In place of the selection.
+    key(&mut h, Modifiers::NONE, Key::End);
+    key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
+    key(&mut h, Modifiers::NONE, Key::Tab);
+    assert_eq!(file(&h), "    R     \n");
+}
