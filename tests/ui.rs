@@ -4,6 +4,9 @@ use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, pos2};
 use egui_kittest::{Harness, HarnessBuilder, kittest::Queryable};
 use multitime::{doc::Doc, session::Inside, ui::App};
 
+/// Where the text box is, right of the views.
+const TEXT_X: f32 = 420.0;
+
 const FILE: &str = "R' U' F D2 L
 >
   // cross
@@ -84,7 +87,7 @@ fn looks() {
 #[test]
 fn typing_and_forks() {
     let mut h = harness("");
-    click(&mut h, pos2(100.0, 45.0), PointerButton::Primary);
+    click(&mut h, pos2(TEXT_X + 100.0, 45.0), PointerButton::Primary);
     typ(&mut h, "R U>F");
     assert_eq!(file(&h), "R U\n>\n  F\n");
     // Arrow keys go through the bubble both ways.
@@ -110,10 +113,10 @@ fn typing_and_forks() {
 fn twisting() {
     let mut h = harness("R");
     // Sticker clicks on both views; the second is detached on inverse.
-    click(&mut h, pos2(990.0, 200.0), PointerButton::Secondary);
+    click(&mut h, pos2(220.0, 200.0), PointerButton::Secondary);
     let after = file(&h);
     assert!(after.starts_with("R ") && after.len() > 2, "{after}");
-    click(&mut h, pos2(990.0, 460.0), PointerButton::Secondary);
+    click(&mut h, pos2(220.0, 460.0), PointerButton::Secondary);
     assert!(file(&h).contains("^("), "{}", file(&h));
     // Keyboard goes to the last-clicked view.
     key(&mut h, Modifiers::NONE, Key::F);
@@ -169,7 +172,7 @@ fn hyperspeedcube_keys() {
     key(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     assert_eq!(file(&h), "Dw' M y\n");
 
-    click(&mut h, pos2(100.0, 45.0), PointerButton::Primary);
+    click(&mut h, pos2(TEXT_X + 100.0, 45.0), PointerButton::Primary);
     key(&mut h, Modifiers::NONE, Key::End);
     typ(&mut h, " R2");
     key(&mut h, Modifiers::NONE, Key::Backspace);
@@ -195,9 +198,9 @@ fn undo_while_previewing() {
 fn clicking_text_moves_caret() {
     let mut h = harness("R U F D B L\nR2 U2");
     for (pos, want) in [
-        (pos2(50.0, 50.0), 3),
-        (pos2(24.0, 67.0), 12),
-        (pos2(86.0, 50.0), 7),
+        (pos2(TEXT_X + 50.0, 50.0), 3),
+        (pos2(TEXT_X + 24.0, 67.0), 12),
+        (pos2(TEXT_X + 86.0, 50.0), 7),
     ] {
         click(&mut h, pos, PointerButton::Primary);
         assert!(
@@ -243,14 +246,14 @@ fn selecting_across_forks() {
         pressed,
         modifiers: Modifiers::NONE,
     };
-    h.event(Event::PointerMoved(pos2(50.0, 50.0)));
-    h.event(button(pos2(50.0, 50.0), true));
+    h.event(Event::PointerMoved(pos2(TEXT_X + 50.0, 50.0)));
+    h.event(button(pos2(TEXT_X + 50.0, 50.0), true));
     h.run_steps(1);
-    for pos in [pos2(40.0, 67.0), pos2(31.0, 84.0)] {
+    for pos in [pos2(TEXT_X + 40.0, 67.0), pos2(TEXT_X + 31.0, 84.0)] {
         h.event(Event::PointerMoved(pos));
         h.run_steps(4);
     }
-    h.event(button(pos2(31.0, 84.0), false));
+    h.event(button(pos2(TEXT_X + 31.0, 84.0), false));
     h.run_steps(2);
     key(&mut h, Modifiers::NONE, Key::Backspace);
     let f = file(&h);
@@ -261,14 +264,14 @@ fn selecting_across_forks() {
 fn text_box_fills_panel() {
     let mut h = harness("R U\n>\n  F\n>\n  D\n");
     shot(&mut h, "fill");
-    click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
+    click(&mut h, pos2(TEXT_X + 500.0, 560.0), PointerButton::Primary);
     typ(&mut h, "x");
     assert_eq!(file(&h), "R U\n>\n  Fx\n>\n  D\n");
 
     let mut h = harness(&"R\n".repeat(100));
     shot(&mut h, "scrolled");
     // It started scrolled to the caret, so this is far from the first line.
-    click(&mut h, pos2(100.0, 100.0), PointerButton::Primary);
+    click(&mut h, pos2(TEXT_X + 100.0, 100.0), PointerButton::Primary);
     assert!(h.state().session.caret().off > 100);
 }
 
@@ -516,14 +519,14 @@ fn dragging_into_a_branch() {
 #[test]
 fn hovering_text() {
     let mut h = harness("R U F D B L");
-    h.event(Event::PointerMoved(pos2(50.0, 50.0)));
+    h.event(Event::PointerMoved(pos2(TEXT_X + 50.0, 50.0)));
     h.run_steps(3);
     shot(&mut h, "hover-text");
     assert!(h.query_all_by_label("preview").count() > 0);
     // Keys show the real caret until the pointer moves again.
     key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(h.query_all_by_label("preview").count(), 0);
-    h.event(Event::PointerMoved(pos2(60.0, 50.0)));
+    h.event(Event::PointerMoved(pos2(TEXT_X + 60.0, 50.0)));
     h.run_steps(3);
     assert!(h.query_all_by_label("preview").count() > 0);
 }
@@ -541,7 +544,7 @@ fn bubbles() {
         )
     };
     let at = |text: &str, off, inside| (text.to_owned(), off, inside);
-    click(&mut h, pos2(500.0, 560.0), PointerButton::Primary);
+    click(&mut h, pos2(TEXT_X + 500.0, 560.0), PointerButton::Primary);
     assert_eq!(caret(&h), at("D B L", 5, No));
     // By tokens, the bubble is one, and passing it keeps the branch.
     for want in [4, 2, 0] {
@@ -597,7 +600,7 @@ fn bubbles() {
     assert_eq!(copied(&mut h), ">\n  D B L\n>\n  L U\n");
     shot(&mut h, "marks");
     // Clicking a mark.
-    click(&mut h, pos2(30.0, 67.0), PointerButton::Primary);
+    click(&mut h, pos2(TEXT_X + 30.0, 67.0), PointerButton::Primary);
     assert_eq!(caret(&h), at("D B L", 0, Mark));
     key(&mut h, Modifiers::NONE, Key::Backspace);
     assert_eq!(file(&h), "R U F\n>\n  L U\n");
@@ -628,7 +631,7 @@ fn up_and_down_keep_the_branch() {
         (s.tip(), s.caret().seg, s.inside())
     };
     for x in [25.0, 50.0, 100.0] {
-        click(&mut h, pos2(x, 50.0), PointerButton::Primary);
+        click(&mut h, pos2(TEXT_X + x, 50.0), PointerButton::Primary);
         // Onto the bubble's line, after the active branch's mark.
         key(&mut h, Modifiers::NONE, Key::ArrowDown);
         assert_eq!(state(&h), (tip, b, Inside::Mark), "{x}");
@@ -645,7 +648,7 @@ fn up_and_down_keep_the_branch() {
 #[test]
 fn moving_and_duplicating_lines() {
     let mut h = harness("A\nB\n>\n  C\n>\n  D\n");
-    click(&mut h, pos2(22.0, 50.0), PointerButton::Primary);
+    click(&mut h, pos2(TEXT_X + 22.0, 50.0), PointerButton::Primary);
     key(&mut h, Modifiers::ALT, Key::ArrowDown);
     assert_eq!(file(&h), "B\nA\n>\n  C\n>\n  D\n");
     key(&mut h, Modifiers::ALT, Key::ArrowDown);
@@ -747,9 +750,9 @@ fn clicks(h: &mut Harness<'_, App>, n: usize, pos: Pos2, path: &[Pos2]) {
 
 #[test]
 fn selecting_text_by_units() {
-    // Characters are 9 wide, from 23.
+    // Characters are 9 wide, from 23 past `TEXT_X`.
     let mut h = harness("R U' [F, D B] L\nB' D2 // cd\n");
-    let x = |i: f32| 27.5 + 9.0 * i;
+    let x = |i: f32| TEXT_X + 27.5 + 9.0 * i;
     let cases: &[(usize, Pos2, &[Pos2], &str)] = &[
         (2, pos2(x(3.0), 50.0), &[], "U'"),
         (2, pos2(x(5.0), 50.0), &[], "[F, D B]"),
@@ -795,14 +798,14 @@ fn selecting_tokens_and_lines_with_arrows() {
     );
     let token = Modifiers::ALT | Modifiers::SHIFT;
     for (arrow, extended) in [(Key::ArrowLeft, "R U2'"), (Key::ArrowRight, "U2' F")] {
-        clicks(&mut h, 1, pos2(50.0, 50.0), &[]);
+        clicks(&mut h, 1, pos2(TEXT_X + 50.0, 50.0), &[]);
         key(&mut h, token, arrow);
         assert_eq!(copied(&mut h), "U2'");
         key(&mut h, token, arrow);
         assert_eq!(copied(&mut h), extended);
     }
     for arrow in [Key::ArrowLeft, Key::ArrowRight] {
-        clicks(&mut h, 1, pos2(50.0, 67.0), &[]);
+        clicks(&mut h, 1, pos2(TEXT_X + 50.0, 67.0), &[]);
         key(&mut h, Modifiers::COMMAND, arrow);
         assert_eq!(copied(&mut h), "");
         key(&mut h, Modifiers::COMMAND, arrow);
@@ -810,7 +813,7 @@ fn selecting_tokens_and_lines_with_arrows() {
         key(&mut h, Modifiers::COMMAND, arrow);
         assert_eq!(copied(&mut h), "B D2 L");
 
-        clicks(&mut h, 1, pos2(50.0, 84.0), &[]);
+        clicks(&mut h, 1, pos2(TEXT_X + 50.0, 84.0), &[]);
         key(&mut h, Modifiers::COMMAND, arrow);
         assert_eq!(copied(&mut h), "");
         key(&mut h, Modifiers::COMMAND, arrow);
@@ -821,7 +824,7 @@ fn selecting_tokens_and_lines_with_arrows() {
 #[test]
 fn selecting_a_whole_line_keeps_multiline_selections() {
     let mut h = build_harness("R U\nF D\nL B\n>\n  B2 L\n>\n  D\n", harness_builder());
-    clicks(&mut h, 1, pos2(25.0, 50.0), &[]);
+    clicks(&mut h, 1, pos2(TEXT_X + 25.0, 50.0), &[]);
     let branch = h.state().session.text().find("B2").unwrap();
     for modifiers in [Modifiers::COMMAND, Modifiers::COMMAND | Modifiers::SHIFT] {
         for arrow in [Key::ArrowLeft, Key::ArrowRight] {
@@ -845,7 +848,7 @@ fn double_click_selects_only_the_bubble_line() {
     let mut h = build_harness(file, harness_builder());
     // The first two marks and the gap between them.
     for x in [30.0, 42.0, 50.0] {
-        clicks(&mut h, 2, pos2(x, 67.0), &[]);
+        clicks(&mut h, 2, pos2(TEXT_X + x, 67.0), &[]);
         assert_eq!(copied(&mut h), ">\n  D\n>\n  F\n>\n  L\n", "{x}");
         assert_eq!(h.state().session.inside(), Inside::Start);
     }
@@ -946,7 +949,7 @@ fn selection_drawn_while_dragging_by_units() {
     // A triple click and hold: egui would select the whole line, but the
     // run ends at the bracket, and that's what's drawn, before release.
     let mut h = harness("R U [F, D] B\n");
-    let x = |i: f32| 27.5 + 9.0 * i;
+    let x = |i: f32| TEXT_X + 27.5 + 9.0 * i;
     let pos = pos2(x(0.0), 50.0);
     h.run_steps(30);
     h.event(Event::PointerMoved(pos));
@@ -978,7 +981,7 @@ fn panels_agree_within_a_frame() {
     // The views are drawn before the text box, which finds what's hovered,
     // and they show it in the same frame.
     let mut h = harness("R U F\n");
-    h.event(Event::PointerMoved(pos2(40.0, 50.0)));
+    h.event(Event::PointerMoved(pos2(TEXT_X + 40.0, 50.0)));
     h.run_steps(1);
     assert_eq!(h.query_all_by_label("preview").count(), 2);
 }
@@ -1015,19 +1018,19 @@ fn context_menu_fmc_tools() {
     };
     // In the text box, the separator goes where the click was.
     select(&mut h, 2, 7);
-    click(&mut h, pos2(67.0, 50.0), PointerButton::Secondary);
+    click(&mut h, pos2(TEXT_X + 67.0, 50.0), PointerButton::Secondary);
     shot(&mut h, "context-menu");
     menu_item(&mut h, "Commutator");
     assert_eq!(file(&h), "F [R U, D]\n");
     // Expand and invert keep the selection.
     select(&mut h, 2, 10);
-    click(&mut h, pos2(67.0, 50.0), PointerButton::Secondary);
+    click(&mut h, pos2(TEXT_X + 67.0, 50.0), PointerButton::Secondary);
     menu_item(&mut h, "Expand");
     assert_eq!(file(&h), "F R U D U' R' D'\n");
-    click(&mut h, pos2(67.0, 50.0), PointerButton::Secondary);
+    click(&mut h, pos2(TEXT_X + 67.0, 50.0), PointerButton::Secondary);
     menu_item(&mut h, "Invert");
     assert_eq!(file(&h), "F D R U D' U' R'\n");
-    click(&mut h, pos2(67.0, 50.0), PointerButton::Secondary);
+    click(&mut h, pos2(TEXT_X + 67.0, 50.0), PointerButton::Secondary);
     menu_item(&mut h, "NISS");
     assert_eq!(file(&h), "F ^(D R U D' U' R')\n");
     // On the timeline too, where the gaps around R U are at 48, 60 and 72.
@@ -1038,7 +1041,7 @@ fn context_menu_fmc_tools() {
     assert_eq!(file(&h), "F [R U: D]\n");
     // Outside the selection, a right click moves the caret, and the menu
     // only pastes.
-    click(&mut h, pos2(22.0, 50.0), PointerButton::Secondary);
+    click(&mut h, pos2(TEXT_X + 22.0, 50.0), PointerButton::Secondary);
     assert_eq!(h.state().session.caret(), at(0));
     assert!(h.query_by_label("Commutator").is_none());
     assert!(h.query_by_label_contains("Paste").is_some());
@@ -1046,8 +1049,8 @@ fn context_menu_fmc_tools() {
 
 #[test]
 fn expanding_with_or_without_the_multiplier() {
-    // Characters are 9 wide, from 23.
-    let x = |i: f32| 27.5 + 9.0 * i;
+    // Characters are 9 wide, from 23 past `TEXT_X`.
+    let x = |i: f32| TEXT_X + 27.5 + 9.0 * i;
     // A double click on a bracket leaves out the multiplier, so it stays.
     let mut h = harness("F [R, U]2");
     clicks(&mut h, 2, pos2(x(2.0), 50.0), &[]);
@@ -1073,7 +1076,7 @@ fn shift_arrows_at_a_bubbles_ends_select_it() {
     let file = "R U\n>\n  D\n>\n  F\n>\n  L\n";
     let mut h = build_harness(file, harness_builder());
     // Into text mode.
-    clicks(&mut h, 1, pos2(50.0, 50.0), &[]);
+    clicks(&mut h, 1, pos2(TEXT_X + 50.0, 50.0), &[]);
     for (end, arrow) in [(true, Key::ArrowRight), (false, Key::ArrowLeft)] {
         let s = &mut h.state_mut().session;
         let b = s.bubbles()[0].clone();
@@ -1096,7 +1099,7 @@ fn shift_arrows_at_a_bubbles_ends_select_it() {
 fn cmd_slash_toggles_comments() {
     let mut h = build_harness("R U' F\nB D2\n", harness_builder());
     // In text mode, on the first line, and in twist mode too.
-    clicks(&mut h, 1, pos2(40.0, 50.0), &[]);
+    clicks(&mut h, 1, pos2(TEXT_X + 40.0, 50.0), &[]);
     key(&mut h, Modifiers::COMMAND, Key::Slash);
     assert_eq!(file(&h), "// R U' F\nB D2\n");
     // Option+arrows go by its tokens.
@@ -1114,7 +1117,7 @@ fn cmd_slash_toggles_comments() {
 #[test]
 fn tab_types_four_spaces_in_text_mode() {
     let mut h = build_harness("R U\n", harness_builder());
-    clicks(&mut h, 1, pos2(40.0, 50.0), &[]);
+    clicks(&mut h, 1, pos2(TEXT_X + 40.0, 50.0), &[]);
     key(&mut h, Modifiers::NONE, Key::Home);
     key(&mut h, Modifiers::NONE, Key::Tab);
     assert_eq!(file(&h), "    R U\n");

@@ -257,7 +257,7 @@ impl App {
             .show(ui, |ui| {
                 self.timeline(ui, &mut preview, &mut command);
             });
-        egui::Panel::right("views")
+        egui::Panel::left("views")
             .resizable(true)
             .default_size(420.0)
             .show(ui, |ui| {
