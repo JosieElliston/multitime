@@ -90,10 +90,10 @@ impl Doc {
         let mut todo: Vec<SegId> = self.ids().collect();
         while let Some(id) = todo.pop() {
             let text = &self.get(id).text;
-            if let Some(off) = find_fork(text) {
-                let (left, right) = (text[..off].to_owned(), text[off + 1..].to_owned());
+            if let Some(at) = find_fork(text) {
+                let (left, right) = (text[..at].to_owned(), text[at + 1..].to_owned());
                 let new = self.split_into(id, left, right);
-                out.push((id, off, new));
+                out.push((id, at, new));
                 todo.push(new);
             }
         }
@@ -151,6 +151,12 @@ impl Doc {
         new
     }
 
+    /// Splits a segment into what's before and after a span, which is dropped.
+    pub fn split_around(&mut self, seg: SegId, span: std::ops::Range<usize>) -> SegId {
+        let text = &self.get(seg).text;
+        let (left, right) = (text[..span.start].to_owned(), text[span.end..].to_owned());
+        self.split_into(seg, left, right)
+    }
     /// Splits a segment exactly at a position.
     pub fn split_at(&mut self, pos: Pos) -> SegId {
         let (left, right) = self.get(pos.seg).text.split_at(pos.off);

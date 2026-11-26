@@ -527,29 +527,57 @@ pub fn delete(text: &str, caret: usize, forward: bool) -> Option<(String, usize)
     } else {
         tokens.iter().rposition(|t| t.span.start < caret)
     }?;
-    let mut span = deletion_span(text, &tokens, index);
+    Some(delete_span(
+        text,
+        deletion_span(text, &tokens, index),
+        caret,
+    ))
+}
+
+/// Deletes a span and the whitespace between it and the caret, leaving one
+/// space between what's left where one is needed. Returns the new text and
+/// caret.
+pub fn delete_span(text: &str, mut span: Range<usize>, caret: usize) -> (String, usize) {
     // Include the whitespace up to the caret, unless it ends a comment.
     if !parse(&text[..caret]).in_comment {
         span = span.start.min(caret)..span.end.max(caret);
     }
-    let (mut before, mut after) = (&text[..span.start], &text[span.end..]);
+    let (text, gap, _) = close_up(&text[..span.start], &text[span.end..]);
+    (text, gap.start)
+}
 
-    // Leave at most one space behind, and at least one if it's needed.
+/// Puts two texts together, leaving at most one space between them, and at
+/// least one if it's needed: a line break after a comment. Returns the text, the span between what's left of
+/// each, and how much was dropped from the start of `after`.
+pub fn close_up(mut before: &str, after: &str) -> (String, Range<usize>, usize) {
+    let mut rest = after;
     let mut space = "";
-    if after.is_empty() || after.starts_with(|c: char| c.is_whitespace() || ")],:".contains(c)) {
+    if parse(before).in_comment {
+        // Or it would be part of the comment.
+        if !rest.is_empty() && !rest.starts_with('\n') {
+            rest = rest.trim_start_matches(' ');
+            space = "\n";
+        }
+    } else if rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || ")],:".contains(c))
+    {
         if let Some(b) = before.strip_suffix(' ') {
             before = b;
         } else if (before.is_empty() || before.ends_with(['\n', '(', '[']))
-            && let Some(a) = after.strip_prefix(' ')
+            && let Some(a) = rest.strip_prefix(' ')
         {
-            after = a;
+            rest = a;
         }
     } else if !before.is_empty()
         && !before.ends_with(|c: char| c.is_whitespace() || "([".contains(c))
     {
         space = " ";
     }
-    Some((format!("{before}{space}{after}"), before.len()))
+    let gap = before.len()..before.len() + space.len();
+    (
+        format!("{before}{space}{rest}"),
+        gap,
+        after.len() - rest.len(),
+    )
 }
 
 /// What a double click (`Token`) or a triple click (`Run`) selects.

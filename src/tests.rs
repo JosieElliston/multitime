@@ -137,21 +137,31 @@ fn forking_is_typing_a_fork() {
         seg: s.doc().root(),
         off: 1,
     });
+    // Without the spaces around it, which would end lines in a file.
     s.fork();
-    assert_eq!(show(&s), "R[^>|] U // hi");
+    assert_eq!(show(&s), "R[^>|]U // hi");
     s.fork();
     assert_eq!(show(&s), "R[>^>|]");
     s.undo();
     s.undo();
-    // Even in a comment.
+    // Partway through a token, or a comment, it's after it.
+    let mut s = Session::new(Doc::new("R U2' F"));
+    s.go_to(Pos {
+        seg: s.doc().root(),
+        off: 3,
+    });
+    s.fork();
+    assert_eq!(show(&s), "R U2'[^>|]F");
+    let mut s = Session::new(Doc::new("R U // hi\nF"));
     s.go_to(Pos {
         seg: s.doc().root(),
         off: 7,
     });
     s.fork();
-    assert_eq!(show(&s), "R U // [^>|]hi");
-    // Joining works from anywhere in the segment, and keeps tokens apart.
-    for (off, inside, want) in [(1, false, "R U // h|i"), (0, true, "R U // |hi")] {
+    assert_eq!(show(&s), "R U // hi[^>|]F");
+    // Joining puts the gap back from anywhere in the segment: a line break
+    // after a comment.
+    for (off, inside, want) in [(1, false, "R U // hi\nF|"), (0, true, "R U // hi\n|F")] {
         let mut s = s.clone();
         if inside {
             s.enter(s.caret().seg);
@@ -763,5 +773,108 @@ fn stepping_by_runs_visits_gaps() {
             }
             assert_eq!(gap(&text, s.caret().off), (want, false), "{text:?}");
         }
+    }
+}
+
+#[test]
+fn deleting_by_runs_and_segments() {
+    let mut s = Session::new(Doc::new("R U [F, D B] L\nB' D2"));
+    let root = s.doc().root();
+    let text = |s: &Session| s.doc().get(root).text.clone();
+    s.delete_to(false, false);
+    assert_eq!(text(&s), "R U [F, D B] L\n");
+    s.go_to(Pos { seg: root, off: 12 });
+    // A bracket takes its group with it.
+    s.delete_to(false, false);
+    assert_eq!((text(&s).as_str(), s.caret().off), ("R U L\n", 3));
+    s.delete_to(true, false);
+    assert_eq!((text(&s).as_str(), s.caret().off), ("R U\n", 3));
+    s.go_to(Pos { seg: root, off: 0 });
+    s.delete_to(true, true);
+    assert_eq!(text(&s), "\n");
+    s.undo();
+    assert_eq!(text(&s), "R U\n");
+
+    // Backwards keeps the line break before the run.
+    let mut s = Session::new(Doc::new("X\nR U"));
+    s.delete_to(false, false);
+    assert_eq!(s.doc().get(s.doc().root()).text, "X\n");
+
+    // From a segment's start, it deletes the fork, like Backspace.
+    let mut s = Session::new(Doc::new("R U >F D"));
+    let segs = s.doc().path(s.tip());
+    s.delete_to(false, true);
+    assert_eq!(s.doc().get(segs[1]).text, "");
+    s.delete_to(false, true);
+    assert_eq!(s.doc().to_file(), "R U\n");
+}
+
+#[test]
+fn joining_leaves_one_space() {
+    for (file, want) in [
+        ("R U\n>\n  F D\n", "R U F D\n"),
+        ("R U \n>\n   F D\n", "R U F D\n"),
+        ("R U \n>\n", "R U\n"),
+        ("(R\n>\n  )\n", "(R)\n"),
+        ("R U // c\n>\n  F\n", "R U // c\nF\n"),
+        ("R U // c\n>\n   F\n", "R U // c\nF\n"),
+    ] {
+        let mut s = Session::new(Doc::from_file(file).unwrap());
+        s.join();
+        assert_eq!(s.doc().to_file(), want, "{file:?}");
+        s.doc().check();
+    }
+    // The caret stays with its token, here before the `D`.
+    let mut s = Session::new(Doc::from_file("R U \n>\n   F D\n").unwrap());
+    s.go_to(Pos {
+        seg: s.tip(),
+        off: 3,
+    });
+    s.join();
+    assert_eq!(s.caret().off, 6);
+    // And at the end of the parent, deleting forward.
+    let mut s = Session::new(Doc::from_file("R U \n>\n   F D\n").unwrap());
+    let root = s.doc().root();
+    s.go_to(Pos { seg: root, off: 4 });
+    s.delete(true);
+    assert_eq!(
+        (s.doc().get(root).text.as_str(), s.caret().off),
+        ("R U F D", 3)
+    );
+}
+
+#[test]
+fn fork_then_join_keeps_the_moves() {
+    let mut rng = Rng(31337);
+    for _ in 0..10_000 {
+        let text = rng.text(12);
+        let mut s = Session::new(Doc::new(&text));
+        s.go_to(Pos {
+            seg: s.doc().root(),
+            off: rng.off(&text),
+        });
+        s.fork();
+        let (forked, inside) = (s.caret().seg, s.inside());
+        assert!(inside, "{text:?}");
+        assert!(
+            s.doc().get(forked).text.trim_start() == s.doc().get(forked).text,
+            "{text:?}"
+        );
+        s.join();
+        s.doc().check();
+        let joined = &s.doc().get(s.doc().root()).text;
+        let tokens = |t: &str| {
+            let p = parse(t);
+            (
+                p.tokens
+                    .iter()
+                    .map(|k| t[k.span.clone()].to_owned())
+                    .collect::<Vec<_>>(),
+                p.op,
+            )
+        };
+        let (a, b) = (tokens(&text), tokens(joined));
+        assert_eq!(a.0, b.0, "{text:?} -> {joined:?}");
+        assert!(a.1 == b.1, "{text:?} -> {joined:?}");
     }
 }

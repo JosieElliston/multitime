@@ -33,6 +33,8 @@ esc cycles between focus on the text box and the two puzzles.
 | Cmd+Left, Cmd+Right | go to the ends of the line | go to the ends of the segment |
 | Up, Down | move by line | switch branches at the bubble before the caret |
 | Backspace, Delete | delete a character | delete a token (a bracket deletes its whole group) |
+| Option+Backspace, Option+Delete | delete a token | delete a run |
+| Cmd+Backspace, Cmd+Delete | delete to the ends of the line | delete to the ends of the segment |
 | Home, End | go to the ends of the line | go to the ends of the path |
 
 ## forks
@@ -73,8 +75,8 @@ These work in both modes:
 | --- | --- |
 | Cmd+Z, Cmd+Shift+Z | undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | select all, copy, cut, paste |
-| Cmd+Enter | right before a bubble, add a first branch to it; right after, a last one; otherwise type a `>`, even in a comment or in twist mode. |
-| Cmd+J | delete the bubble before the caret's segment, keeping the active branch |
+| Cmd+Enter | fork at the gap between tokens at or after the caret (so after a comment, not in it), in place of its spaces. right before a bubble, add a first branch to it instead; right after, a last one; inside one, an empty branch. |
+| Cmd+J | delete the bubble before the caret's segment, keeping the active branch, and put back a space, or a line break after a comment |
 | Cmd+[, Cmd+] | switch branches |
 | Cmd+S | save |
 

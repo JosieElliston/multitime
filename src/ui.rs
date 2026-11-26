@@ -304,14 +304,25 @@ impl App {
             };
         }
         let Mode::Twist(view) = self.mode else {
-            // Option moves by tokens, as egui would by words.
-            for (k, forward) in [(Key::ArrowLeft, false), (Key::ArrowRight, true)] {
+            // Option moves and deletes by tokens, as egui would by words.
+            let keys = [
+                (Key::ArrowLeft, false),
+                (Key::ArrowRight, true),
+                (Key::Backspace, false),
+                (Key::Delete, true),
+            ];
+            for (k, forward) in keys {
                 let (pressed, shift) = ui.input(|i| {
                     let m = i.modifiers;
                     (m.alt && !m.command && !m.ctrl && i.key_pressed(k), m.shift)
                 });
-                if pressed {
-                    ui.input_mut(|i| i.consume_key(Modifiers::ALT, k));
+                if !pressed {
+                    continue;
+                }
+                ui.input_mut(|i| i.consume_key(Modifiers::ALT, k));
+                if matches!(k, Key::Backspace | Key::Delete) {
+                    self.session.delete(forward);
+                } else {
                     self.session.step_word(forward, shift);
                 }
             }
@@ -328,13 +339,16 @@ impl App {
                     modifiers,
                 } => {
                     let arrow = matches!(key, Key::ArrowLeft | Key::ArrowRight);
-                    if arrow && !modifiers.ctrl && (modifiers.command || modifiers.alt) {
+                    let delete = matches!(key, Key::Backspace | Key::Delete);
+                    if (arrow || delete) && !modifiers.ctrl && (modifiers.command || modifiers.alt)
+                    {
                         // By segment or by run.
-                        let forward = key == Key::ArrowRight;
-                        if modifiers.command {
-                            self.session.step_segment(forward, modifiers.shift);
-                        } else {
-                            self.session.step_run(forward, modifiers.shift);
+                        let forward = matches!(key, Key::ArrowRight | Key::Delete);
+                        let s = &mut self.session;
+                        match (delete, modifiers.command) {
+                            (false, true) => s.step_segment(forward, modifiers.shift),
+                            (false, false) => s.step_run(forward, modifiers.shift),
+                            (true, by_segment) => s.delete_to(forward, by_segment),
                         }
                         return false;
                     }

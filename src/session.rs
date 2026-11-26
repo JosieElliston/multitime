@@ -410,6 +410,9 @@ impl Session {
     /// Like `step`, but past a whole run: the tokens up to a bracket,
     /// separator or line break.
     pub fn step_run(&mut self, forward: bool, extend: bool) {
+        self.move_caret(self.run_stop(forward), extend);
+    }
+    fn run_stop(&self, forward: bool) -> Pos {
         let Pos { seg, off } = self.caret;
         let text = &self.doc.get(seg).text;
         let n = notation::parse(text).tokens.len();
@@ -418,7 +421,7 @@ impl Session {
             seg,
             off: notation::gap_offset(text, gap),
         };
-        let pos = if self.inside {
+        if self.inside {
             self.stepped(forward)
         } else if forward && gap < n {
             at(notation::run_gap(text, gap, true))
@@ -428,12 +431,14 @@ impl Session {
             at(notation::run_gap(text, gap, false))
         } else {
             self.stepped(forward)
-        };
-        self.move_caret(pos, extend);
+        }
     }
     /// Moves the caret to the end of its segment, or its start going
     /// backwards, or else to that of the next segment along the path.
     pub fn step_segment(&mut self, forward: bool, extend: bool) {
+        self.move_caret(self.segment_stop(forward), extend);
+    }
+    fn segment_stop(&self, forward: bool) -> Pos {
         let path = self.doc.path(self.tip);
         let Pos { seg, off } = self.caret;
         let i = path.iter().position(|s| *s == seg).expect("caret on path");
@@ -445,7 +450,7 @@ impl Session {
                 off: notation::gap_offset(text, n),
             }
         };
-        let pos = if forward {
+        if forward {
             if self.inside || off < end(seg).off {
                 end(seg)
             } else {
@@ -456,8 +461,7 @@ impl Session {
         } else {
             let prev = path[..i].last().copied().unwrap_or(seg);
             Pos { seg: prev, off: 0 }
-        };
-        self.move_caret(pos, extend);
+        }
     }
     /// Moves the caret to the start or end of the path.
     pub fn step_all(&mut self, forward: bool, extend: bool) {
@@ -496,6 +500,37 @@ impl Session {
             return false;
         }
         true
+    }
+
+    /// Deletes the selection, or else up to where `step_run` or `step_segment`
+    /// would go, and any group whose bracket that covers. Across a fork, it
+    /// deletes the fork, like `delete`.
+    pub fn delete_to(&mut self, forward: bool, by_segment: bool) {
+        let to = if by_segment {
+            self.segment_stop(forward)
+        } else {
+            self.run_stop(forward)
+        };
+        let Pos { seg, off } = self.caret;
+        if self.anchor.is_some() || self.inside || to.seg != seg {
+            self.delete(forward);
+            return;
+        }
+        if to.off == off {
+            return;
+        }
+        let before = self.snapshot();
+        let text = &self.doc.get(seg).text;
+        let (mut lo, hi) = (off.min(to.off), off.max(to.off));
+        // Going backwards, from the first token, so as to keep a line break.
+        if !forward {
+            lo += text[lo..hi].len() - text[lo..hi].trim_start().len();
+        }
+        let span = notation::close_groups(text, lo..hi);
+        let (new, off) = notation::delete_span(text, span, off);
+        self.doc.set_text(seg, new);
+        self.caret.off = off;
+        self.record(before);
     }
 
     /// Deletes the selection, or else one token. A bubble counts as a token.
@@ -777,14 +812,18 @@ impl Session {
         let before = self.snapshot();
         let Pos { seg, off } = self.caret;
         let text = self.doc.get(seg).text.clone();
+        let tokens = notation::parse(&text).tokens;
+        // At the gap at or after the caret, so past a token or comment that
+        // it's partway through.
         let (gap, partway) = notation::gap(&text, off);
+        let gap = gap + usize::from(partway);
         let path = self.doc.path(self.tip);
         let next = path
             .iter()
             .position(|s| *s == seg)
             .and_then(|i| path.get(i + 1));
         // Right beside a bubble, as tokens go, it adds a branch on that side.
-        let beside = if self.inside || partway {
+        let beside = if self.inside {
             None
         } else if gap == 0
             && let Some(parent) = self.doc.get(seg).parent
@@ -793,7 +832,7 @@ impl Session {
                 self.doc
                     .insert_child(parent, self.doc.get(parent).children.len()),
             )
-        } else if gap == notation::parse(&text).tokens.len() && next.is_some() {
+        } else if gap == tokens.len() && next.is_some() {
             Some(self.doc.insert_child(seg, 0))
         } else {
             None
@@ -801,15 +840,17 @@ impl Session {
         if let Some(new) = beside {
             self.show(new);
             self.enter(new);
-        } else if !self.inside && notation::parse(&text[..off]).in_comment {
-            // Since a `>` would only be text there.
-            let new = self.doc.split_at(self.caret);
+        } else if self.inside {
+            self.insert(">");
+        } else {
+            // The fork takes the gap's place, whitespace and all.
+            let start = notation::gap_offset(&text, gap);
+            let end = tokens.get(gap).map_or(text.len(), |t| t.span.start);
+            let new = self.doc.split_around(seg, start..end);
             if self.tip == seg {
                 self.tip = new;
             }
             (self.caret, self.inside) = (Pos { seg: new, off: 0 }, true);
-        } else {
-            self.insert(">");
         }
         self.record(before);
     }
@@ -820,18 +861,25 @@ impl Session {
         self.join_into_parent(self.caret.seg);
         self.record(before);
     }
-    /// Adds a space if the tokens on either side would run together.
+    /// Puts back the gap that a fork took the place of, as deleting does: a
+    /// space, or a line break after a comment.
     fn join_into_parent(&mut self, seg: SegId) {
+        let mut dropped = 0;
         if let Some(parent) = self.doc.get(seg).parent {
-            let text = &self.doc.get(parent).text;
-            let padding = notation::padding(text, &self.doc.get(seg).text);
-            self.doc.set_text(parent, format!("{text}{padding}"));
+            let text = self.doc.get(seg).text.clone();
+            let (joined, gap, d) = notation::close_up(&self.doc.get(parent).text, &text);
+            self.doc.set_text(parent, joined[..gap.end].to_owned());
+            self.doc.set_text(seg, joined[gap.end..].to_owned());
+            dropped = d;
+            if self.caret.seg == parent && self.caret.off > gap.start {
+                self.caret.off = gap.end;
+            }
         }
         if let Some(start) = self.doc.join(seg) {
             if self.caret.seg == seg {
                 self.caret = Pos {
                     seg: start.seg,
-                    off: start.off + self.caret.off,
+                    off: start.off + self.caret.off.saturating_sub(dropped),
                 };
                 self.inside = false;
             }

@@ -143,13 +143,17 @@ fn hyperspeedcube_keys() {
     key(&mut h, Modifiers::SHIFT, Key::Num3);
     key(&mut h, Modifiers::NONE, Key::Semicolon);
     assert_eq!(file(&h), "Dw' M y\n");
-    // Backspace is by tokens, and the text box's other deletions do nothing.
+    // Backspace is by tokens, with Option by runs and with Cmd by segments,
+    // and the text box's other deletions do nothing.
     key(&mut h, Modifiers::NONE, Key::Backspace);
     assert_eq!(file(&h), "Dw' M\n");
     key(&mut h, Modifiers::COMMAND, Key::Z);
     for m in [Modifiers::ALT, Modifiers::COMMAND] {
-        key(&mut h, m, Key::Backspace);
         key(&mut h, m, Key::Delete);
+        assert_eq!(file(&h), "Dw' M y\n");
+        key(&mut h, m, Key::Backspace);
+        assert_eq!(file(&h), "\n");
+        key(&mut h, Modifiers::COMMAND, Key::Z);
     }
     for k in [Key::H, Key::K, Key::U, Key::W] {
         key(&mut h, Modifiers::CTRL, k);
@@ -792,4 +796,19 @@ fn panels_agree_within_a_frame() {
     h.event(Event::PointerMoved(pos2(40.0, 50.0)));
     h.run_steps(1);
     assert_eq!(h.query_all_by_label("preview").count(), 2);
+}
+
+#[test]
+fn text_mode_deletes_by_tokens() {
+    let mut h = harness("R U2' [F, D]\n");
+    key(&mut h, Modifiers::NONE, Key::Escape);
+    key(&mut h, Modifiers::NONE, Key::Escape);
+    // Text mode, at the end.
+    key(&mut h, Modifiers::ALT, Key::Backspace);
+    assert_eq!(file(&h), "R U2'\n");
+    key(&mut h, Modifiers::ALT, Key::ArrowLeft);
+    key(&mut h, Modifiers::ALT, Key::Delete);
+    assert_eq!(file(&h), "R\n");
+    key(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(file(&h), "R U2'\n");
 }
