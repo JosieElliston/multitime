@@ -41,7 +41,9 @@ esc cycles between focus on the text box and the two puzzles.
 
 a **bubble** has a `>` for each child, with one active child. it's on a line of its own, and the line breaks around it aren't part of the text: they only separate it from the lines before and after it. so an empty segment has no line, and two bubbles can be on adjacent lines.
 
-a branch starts right after its `>`, so the caret can go after any `>`, which makes that branch active, or before the first. the start of a branch's first line is the same place, so the caret shows after the `>` instead: Right from after the last `>` goes past the first character, and Left comes back. Up and Down onto a bubble's line go after the active `>`. to pass a bubble without changing the active branch, hold option.
+the caret can go into a bubble, before its first `>` or after one of them, and whichever `>` it's right after becomes active. Up and Down onto a bubble's line go after the active `>`. to pass a bubble without changing the active branch, hold option.
+
+in twist mode and on the timeline, a branch starts right after its `>`, rather than at the start of its first line.
 
 cmd+[ and cmd+], or clicking a `>`, also switch branches.
 
@@ -53,18 +55,18 @@ in both the text box and the timeline:
 - triple-click selects a run: the tokens up to the nearest bracket, separator, or line break, such as one side of a commutator, or a line and its comment. on a bracket or separator, it selects what's inside the group.
 - dragging after either extends by the same unit. a drag over a bracket takes in its whole group.
 
-a selection that starts in a bubble stays in it, and selects `>`s, except that from after a `>`, it can go into that branch. any other selection takes in all of a bubble or none of it.
+a selection that starts in a bubble stays in it, and selects `>`s. any other selection takes in all of a bubble or none of it.
 
 ### making forks
 
 - outside a comment or bubble, type `>` to split the timeline. the fork takes the place of the whitespace around it.
-- after a `>`, at its branch's start, `>` adds an empty branch after it, and before the first `>`, a first one.
+- inside a bubble, `>` adds an empty branch after the `>` before the caret, or before the first `>`, a first one.
 - before a bubble's first `>`, anything else goes on a line of its own before the bubble.
 
 ### deleting forks
 
-- Backspace after a `>`, at its branch's start, deletes the `>` and its branch, unless it's the only `>`, in which case its text is kept. this works in twist mode too.
-- Delete at the end of the line before a bubble deletes the bubble like Cmd+J.
+- in a bubble, Backspace deletes a `>` and its branch, unless it's the only `>`, in which case its text is kept. in twist mode, that's Backspace at a branch's start.
+- Backspace at the start of the line after a bubble, or Delete at the end of the line before it, deletes the bubble like Cmd+J.
 
 ### copy/paste
 
@@ -77,7 +79,7 @@ a selection that starts in a bubble stays in it, and selects `>`s, except that f
 
 Option+Up and Option+Down move the lines that the selection or caret is on, past the line above or below, which can be a bubble's. past a bubble, they go into or out of its active branch only, as the text box reads. a selection across bubbles moves their lines with it, but not past another bubble's line. before a bubble's first `>`, they move the bubble's line.
 
-at a branch's start, right after its `>`, they move the branch among its siblings instead, as do selected `>`s. this is the same place in twist mode and on the timeline, right after a fork's arrow. so to move a branch's first line, put the caret anywhere past its start.
+on a bubble's line, they move the selected `>`s, or the one before the caret, among their siblings. in twist mode, that's at a branch's start.
 
 Shift+Option+Up and Shift+Option+Down duplicate the lines instead, within one segment, or the branches, leaving the caret on the upper or lower copy.
 
@@ -89,7 +91,7 @@ These work in both modes:
 | --- | --- |
 | Cmd+Z, Cmd+Shift+Z | undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | select all, copy, cut, paste |
-| Cmd+Enter | fork at the gap between tokens at or after the caret (so after a comment, not in it), in place of its spaces. right before a bubble, add a first branch to it instead; at a branch's start, a branch after it; before a bubble's first `>`, a first one. |
+| Cmd+Enter | fork at the gap between tokens at or after the caret (so after a comment, not in it), in place of its spaces. right before a bubble, add a first branch to it instead; right after one, or inside one, a branch after the caret's; before a bubble's first `>`, a first one. |
 | Cmd+J | delete the bubble before the caret's segment, keeping the active branch. its line goes, and a line break stays between the text before and after it. |
 | Option+Up, Option+Down | move lines or branches (see [moving lines](#moving-lines)) |
 | Shift+Option+Up, Shift+Option+Down | duplicate lines or branches |

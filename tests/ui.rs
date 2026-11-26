@@ -84,12 +84,12 @@ fn typing_and_forks() {
     typ(&mut h, "R U>F");
     assert_eq!(file(&h), "R U\n>\n  F\n");
     // Arrow keys go through the bubble both ways.
-    for _ in 0..3 {
+    for _ in 0..4 {
         key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     }
     typ(&mut h, "2");
     assert_eq!(file(&h), "R U2\n>\n  F\n");
-    for _ in 0..2 {
+    for _ in 0..3 {
         key(&mut h, Modifiers::NONE, Key::ArrowRight);
     }
     typ(&mut h, "x ");
@@ -442,13 +442,15 @@ fn typing_a_fork() {
         for _ in 0..2 {
             key(&mut h, Modifiers::NONE, Key::Escape); // to the text box
         }
-        key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+        for _ in 0..2 {
+            key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+        }
         h
     };
-    // At a branch's start, it's a new branch after it.
+    // In a bubble, it's a new branch.
     let mut h = start("R U\n>\n  F\n>\n  D\n");
     typ(&mut h, ">x");
-    assert_eq!(file(&h), "R U\n>\n  F\n>\n  x\n>\n  D\n");
+    assert_eq!(file(&h), "R U\n>\n  F\n>\n  D\n>\n  x\n");
     // Ordinary text in a comment, which can end at a bubble.
     let mut h = start("R U\n>\n  F\n");
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
@@ -551,7 +553,12 @@ fn bubbles() {
     key(&mut h, Modifiers::ALT, Key::ArrowRight);
     assert_eq!(caret(&h), at("D B L", 0, No));
     // By characters, the caret goes after each mark, making its branch
-    // active, and before the first. After a mark is its branch's start.
+    // active, and before the first.
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("L U", 0, Mark));
+    shot(&mut h, "inside");
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(caret(&h), at("D B L", 0, Mark));
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     assert_eq!(caret(&h), at("D B L", 0, Start));
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
@@ -560,31 +567,23 @@ fn bubbles() {
     assert_eq!(caret(&h), at("D B L", 0, Start));
     for text in ["D B L", "L U"] {
         key(&mut h, Modifiers::NONE, Key::ArrowRight);
-        assert_eq!(caret(&h), at(text, 0, No));
+        assert_eq!(caret(&h), at(text, 0, Mark));
     }
-    shot(&mut h, "inside");
-    // Then past the first character, since the start of the line is the
-    // branch's start too.
     key(&mut h, Modifiers::NONE, Key::ArrowRight);
-    assert_eq!(caret(&h), at("L U", 1, No));
-    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     assert_eq!(caret(&h), at("L U", 0, No));
-    key(&mut h, Modifiers::NONE, Key::ArrowRight);
     // Selecting goes over it, and copies only the active branch.
-    key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
-    assert_eq!(copied(&mut h), "L");
     key(&mut h, Modifiers::SHIFT, Key::ArrowLeft);
     assert_eq!(caret(&h), at("R U F", 5, No));
     shot(&mut h, "inline");
-    assert_eq!(copied(&mut h), "\n>\nL");
+    assert_eq!(copied(&mut h), "\n>\n");
     // And back.
     key(&mut h, Modifiers::SHIFT, Key::ArrowRight);
     assert_eq!(caret(&h), at("L U", 0, No));
-    assert_eq!(copied(&mut h), "L");
+    assert_eq!(copied(&mut h), "");
     // Selecting the marks, from before the first.
-    click(&mut h, pos2(30.0, 67.0), PointerButton::Primary);
     key(&mut h, Modifiers::NONE, Key::ArrowLeft);
-    assert_eq!(caret(&h), at("D B L", 0, Start));
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
     key(&mut h, Modifiers::SHIFT, Key::ArrowRight);
     assert_eq!(copied(&mut h), ">\n  D B L\n");
     // It doesn't leave the bubble.
@@ -593,12 +592,13 @@ fn bubbles() {
     }
     assert_eq!(copied(&mut h), ">\n  D B L\n>\n  L U\n");
     shot(&mut h, "marks");
-    // Clicking a mark, and Backspace after it.
+    // Clicking a mark.
     click(&mut h, pos2(30.0, 67.0), PointerButton::Primary);
-    assert_eq!(caret(&h), at("D B L", 0, No));
+    assert_eq!(caret(&h), at("D B L", 0, Mark));
     key(&mut h, Modifiers::NONE, Key::Backspace);
     assert_eq!(file(&h), "R U F\n>\n  L U\n");
     assert_eq!(caret(&h), at("L U", 0, Start));
+    key(&mut h, Modifiers::NONE, Key::ArrowRight);
     key(&mut h, Modifiers::NONE, Key::ArrowRight);
     key(&mut h, Modifiers::NONE, Key::Backspace);
     assert_eq!(file(&h), "R U F\nL U\n");
@@ -619,20 +619,19 @@ fn up_and_down_keep_the_branch() {
         .doc()
         .get(h.state().session.doc().root())
         .children[0];
-    // Whether the caret is at the start of its segment, after its `>`.
     let state = |h: &Harness<'_, App>| {
         let s = &h.state().session;
-        (s.tip(), s.caret().seg, s.caret().off == 0)
+        (s.tip(), s.caret().seg, s.inside())
     };
     for x in [25.0, 50.0, 100.0] {
         click(&mut h, pos2(x, 50.0), PointerButton::Primary);
         // Onto the bubble's line, after the active branch's mark.
         key(&mut h, Modifiers::NONE, Key::ArrowDown);
-        assert_eq!(state(&h), (tip, b, true), "{x}");
+        assert_eq!(state(&h), (tip, b, Inside::Mark), "{x}");
         key(&mut h, Modifiers::NONE, Key::ArrowDown);
-        assert_eq!(state(&h), (tip, b, false), "{x}");
+        assert_eq!(state(&h), (tip, b, Inside::No), "{x}");
         key(&mut h, Modifiers::NONE, Key::ArrowUp);
-        assert_eq!(state(&h), (tip, b, true), "{x}");
+        assert_eq!(state(&h), (tip, b, Inside::Mark), "{x}");
         key(&mut h, Modifiers::NONE, Key::ArrowUp);
         assert_eq!(h.state().session.tip(), tip);
         assert_eq!(h.state().session.inside(), Inside::No);
@@ -642,18 +641,17 @@ fn up_and_down_keep_the_branch() {
 #[test]
 fn moving_and_duplicating_lines() {
     let mut h = harness("A\nB\n>\n  C\n>\n  D\n");
-    // After the `A`, since at a branch's start, the branch would move.
-    click(&mut h, pos2(60.0, 50.0), PointerButton::Primary);
+    click(&mut h, pos2(22.0, 50.0), PointerButton::Primary);
     key(&mut h, Modifiers::ALT, Key::ArrowDown);
     assert_eq!(file(&h), "B\nA\n>\n  C\n>\n  D\n");
     key(&mut h, Modifiers::ALT, Key::ArrowDown);
     assert_eq!(file(&h), "B\n>\n  A\n  C\n>\n  D\n");
     key(&mut h, Modifiers::ALT | Modifiers::SHIFT, Key::ArrowDown);
     assert_eq!(file(&h), "B\n>\n  A\n  A\n  C\n>\n  D\n");
-    // At a branch's start, after its `>`, the branch moves.
+    // On the bubble's line, the branch after the caret's mark moves.
     key(&mut h, Modifiers::NONE, Key::ArrowUp);
     key(&mut h, Modifiers::NONE, Key::ArrowUp);
-    assert_eq!(h.state().session.caret().off, 0);
+    assert_eq!(h.state().session.inside(), Inside::Mark);
     key(&mut h, Modifiers::ALT, Key::ArrowDown);
     assert_eq!(file(&h), "B\n>\n  D\n>\n  A\n  A\n  C\n");
     // In twist mode too.

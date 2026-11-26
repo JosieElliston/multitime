@@ -270,11 +270,10 @@ fn bubbles() {
     s.cycle_sibling(1);
     assert_eq!(show(&s), "R\n[>^>|]\nF\n[^>]\nD");
     // Out of it, and in again.
-    assert!(s.step_bubble(false) && !s.step_bubble(false));
-    assert_eq!(show(&s), "R|\n[>^>]\nF\n[^>]\nD");
     assert!(s.step_bubble(true) && !s.step_bubble(true));
-    assert_eq!(show(&s), "R\n[>^>|]\nF\n[^>]\nD");
-    s.step_bubble(false);
+    assert_eq!(show(&s), "R\n[>^>]\n|F\n[^>]\nD");
+    assert!(s.step_bubble(false) && s.step_bubble(false) && !s.step_bubble(false));
+    assert_eq!(show(&s), "R|\n[>^>]\nF\n[^>]\nD");
     // Switching is at the bubble before the caret, which there isn't.
     s.cycle_sibling(1);
     assert_eq!(show(&s), "R|\n[>^>]\nF\n[^>]\nD");
@@ -309,25 +308,23 @@ fn bubbles() {
     backspace(&mut s);
     assert_eq!(show(&s), "R\n[|^>]\nF\n[^>]\nD");
     s.undo();
-    // Delete, in it, and after the last `>`, where it's at the branch's
-    // start.
+    // Delete, in and at the end of it.
     s.enter(u);
     let o = s.caret_offset();
     replace(&mut s, o..o + 1, "");
     assert_eq!(show(&s), "R\n[^>|]\nU");
     replace(&mut s, o..o + 1, "");
-    assert_eq!(show(&s), "R\n[^>|]");
-    // The line break before it, from the end of the line before, deletes the
-    // bubble, keeping the active branch.
-    let mut s = full.clone();
-    s.set_caret_offset(1);
-    replace(&mut s, 1..2, "");
-    assert_eq!(show(&s), "R|\nF\n[^>]\nD");
-    s.undo();
-    assert_eq!(s.doc(), full.doc());
-    // The start of the branch's line is its start, after its `>`.
-    s.set_caret_offset(5);
-    assert_eq!(show(&s), "R\n[>^>|]\nF\n[^>]\nD");
+    assert_eq!(show(&s), "R\n[^>|]\nU");
+    // A line break from after or before it deletes the bubble, keeping the
+    // active branch.
+    for (off, r, want) in [(5, 4..5, "R\n|F\n[^>]\nD"), (1, 1..2, "R|\nF\n[^>]\nD")] {
+        let mut s = full.clone();
+        s.set_caret_offset(off);
+        replace(&mut s, r, "");
+        assert_eq!(show(&s), want);
+        s.undo();
+        assert_eq!(s.doc(), full.doc());
+    }
     // Everything.
     let mut s = full.clone();
     let n = s.text().len();
@@ -424,14 +421,13 @@ fn copying_branches() {
     let mut all = s.clone();
     all.select_offsets(start, after_f + 1, None);
     assert_eq!(all.copy().unwrap(), ">\n  F\n  >\n    G\n>\n  D L\n");
-    // A selection that starts in a bubble stays in it, but from a branch's
-    // start, it can go into the branch.
+    // A selection that starts in a bubble stays in it.
     let mut s2 = s.clone();
     s2.select_offsets(after_f, 0, None);
     assert_eq!(show(&s2), "R\n[|«^>»>]\nF\n[^>]\nG");
+    let mut s2 = s.clone();
     s2.select_offsets(after_f, s2.text().len(), None);
-    assert_eq!(show(&s2), "R\n[^>>]\n«F\n[^>]\nG|»");
-    assert_eq!(s2.copy().unwrap(), "F\n>\nG");
+    assert_eq!(show(&s2), "R\n[>«^>|»]\nD L");
 
     // Pasted at the end of a leaf, they're its branches.
     let mut s3 = s.clone();
@@ -485,18 +481,14 @@ fn moving_lines() {
     s.go_to(Pos { seg: root, off: 0 });
     s.move_lines(true);
     assert_eq!(show(&s), "B\n|A\n[^>>]\nC\nD");
-    // Past the bubble, into the active branch only. At its start, the caret
-    // is after its `>`.
+    // Past the bubble, into the active branch only.
     s.move_lines(true);
-    assert_eq!(show(&s), "B\n[^>|>]\nA\nC\nD");
+    assert_eq!(show(&s), "B\n[^>>]\n|A\nC\nD");
     assert_eq!(s.doc().to_file(), "B\n>\n  A\n  C\n  D\n>\n  E\n");
     // And back, into the parent.
-    s.go_to(Pos {
-        seg: s.caret().seg,
-        off: 1,
-    });
     s.move_lines(false);
-    assert_eq!(show(&s), "B\nA|\n[^>>]\nC\nD");
+    assert_eq!(show(&s), "B\n|A\n[^>>]\nC\nD");
+    s.go_to(Pos { seg: root, off: 3 });
     // The last line of a segment leaves it without a line, so bubbles can
     // be next to each other.
     s.move_lines(true);
@@ -717,15 +709,9 @@ fn random_editing() {
             assert!(s.doc().path(s.tip()).contains(&s.caret().seg));
             s.eval(s.caret());
             assert!(s.doc().get(s.tip()).children.is_empty());
-            // An empty root has no line, so its end is before the first `>`.
-            let spot = s.at_offset(s.caret_offset());
-            let root = Pos {
-                seg: s.doc().root(),
-                off: 0,
-            };
-            if s.anchor_offset() == s.caret_offset() && s.caret() != root {
-                assert_eq!(spot, (s.caret(), s.inside()));
-            }
+            let mut t = s.clone();
+            t.set_caret_offset(s.caret_offset());
+            assert_eq!(t.caret_offset(), s.caret_offset());
             let file = s.doc().to_file();
             assert_eq!(Doc::from_file(&file).unwrap().to_file(), file);
         }
@@ -1140,7 +1126,7 @@ fn fork_then_join_keeps_the_moves() {
         });
         s.fork();
         let (forked, inside) = (s.caret().seg, s.inside());
-        assert_eq!((s.caret().off, inside), (0, Inside::No), "{text:?}");
+        assert_eq!(inside, Inside::Mark, "{text:?}");
         assert!(
             s.doc().get(forked).text.trim_start() == s.doc().get(forked).text,
             "{text:?}"
@@ -1227,14 +1213,35 @@ fn branch_starts() {
     s.enter(a);
     s.fork();
     assert_eq!(show(&s), "R\n[>^>|>]");
-    // Keys: Right from after the last `>` goes past the first character,
-    // and Down onto a bubble's line, after the active `>`.
+    // Stepping by tokens, as on the timeline, a branch's start is after its
+    // `>`.
+    let mut s = full.clone();
+    s.go_to(s.doc().end(root));
+    s.step(true, false);
+    assert_eq!(show(&s), "R\n[^>|>]\nA");
+    s.move_lines(true);
+    assert_eq!(show(&s), "R\n[>^>|]\nA");
+    // Down onto a bubble's line goes after the active `>`.
     let mut s = full.clone();
     s.enter(a);
     let o = s.caret_offset();
-    assert_eq!(s.key_offset(o, o + 2, false), o + 3);
-    assert_eq!(s.key_offset(0, o - 1, true), o);
-    // Selecting from it into its text.
+    assert_eq!(s.key_offset(o - 1, true), o);
+    // A selection from there stays on its line.
     s.select_offsets(o, o + 3, Some(true));
-    assert_eq!(show(&s), "R\n[^>>]\n«A|»");
+    assert_eq!(show(&s), "R\n[>«^>|»]\nB");
+    // The start of a branch's first line isn't after its `>`, so there,
+    // Option+Down moves the line.
+    let mut s = Session::new(Doc::from_file("R\n>\n  A\n  B\n").unwrap());
+    s.go_to(Pos {
+        seg: s.tip(),
+        off: 0,
+    });
+    assert_eq!(show(&s), "R\n[^>]\n|A\nB");
+    s.move_lines(true);
+    assert_eq!(show(&s), "R\n[^>]\nB\n|A");
+    s.move_lines(false);
+    s.move_lines(false);
+    assert_eq!(show(&s), "R\n|A\n[^>]\nB");
+    s.move_lines(true);
+    assert_eq!(show(&s), "R\n[^>]\n|A\nB");
 }

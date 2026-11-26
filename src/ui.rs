@@ -681,7 +681,7 @@ impl App {
             let pointer = ui.input(|i| i.pointer.primary_down() || i.pointer.any_released());
             let mut new = byte(r.primary);
             if !pointer {
-                new = self.session.key_offset(caret, new, r.h_pos.is_some());
+                new = self.session.key_offset(new, r.h_pos.is_some());
             }
             let from = byte(r.secondary);
             if r.is_empty() || new == from {
@@ -1146,7 +1146,7 @@ impl App {
         });
         if let Some(action) = action.inner {
             match action {
-                TimelineAction::Go(pos) => self.session.go_to(pos),
+                TimelineAction::Go(pos) => self.session.go_to_on_timeline(pos),
                 TimelineAction::Select {
                     from: Some(from),
                     to,
