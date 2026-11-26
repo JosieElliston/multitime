@@ -14,7 +14,6 @@ use std::path::PathBuf;
 
 /// Colors for a theme.
 struct Palette {
-    accent: Color32,
     moves: Color32,
     comment: Color32,
     /// A plain group's brackets.
@@ -26,7 +25,6 @@ struct Palette {
     dim: Color32,
 }
 const DARK: Palette = Palette {
-    accent: Color32::from_rgb(255, 170, 60),
     moves: Color32::from_rgb(110, 170, 255),
     comment: Color32::from_rgb(110, 190, 110),
     group: Color32::from_rgb(190, 140, 255),
@@ -38,7 +36,6 @@ const DARK: Palette = Palette {
 };
 /// Darker, for a light background.
 const LIGHT: Palette = Palette {
-    accent: Color32::from_rgb(220, 115, 0),
     moves: Color32::from_rgb(25, 95, 205),
     comment: Color32::from_rgb(35, 125, 45),
     group: Color32::from_rgb(125, 65, 200),
@@ -66,9 +63,8 @@ const GHOST_CARET: Stroke = Stroke {
 };
 const EDITOR: &str = "path editor";
 const FONT: FontId = FontId::monospace(15.0);
-/// Width of a `MARK` in the text box, and the room after a bubble's last one.
+/// Width of a `MARK` in the text box.
 const MARK_WIDTH: f32 = 18.0;
-const END_WIDTH: f32 = 8.0;
 
 struct View {
     mode: InversionMode,
@@ -993,22 +989,21 @@ impl App {
         preview: &mut Option<Pos>,
     ) {
         let segs = self.session.doc().siblings(active);
-        let width = segs.len() as f32 * MARK_WIDTH + END_WIDTH;
-        let outline = Rect::from_min_size(at - vec2(0.0, 8.5), vec2(width, 17.0));
         let p = palette(ui);
-        let stroke = Stroke::new(1.0, p.dim);
-        let inside = egui::StrokeKind::Inside;
-        ui.painter()
-            .rect_stroke(outline.shrink2(vec2(2.0, 0.0)), 5.0, stroke, inside);
         for (i, &seg) in segs.iter().enumerate() {
             let center = at + vec2(1.0 + (i as f32 + 0.5) * MARK_WIDTH, 0.0);
             let rect = Rect::from_center_size(center, vec2(MARK_WIDTH - 5.0, 13.0));
             let r = ui.interact(rect, Id::unique(("fork mark", seg)), Sense::click());
             let is_selected = seg == active;
-            let color = if is_selected { p.accent } else { p.dim };
-            if is_selected || r.hovered() {
+            // As on the timeline: the active branch's is the text color.
+            let color = if is_selected {
+                ui.visuals().strong_text_color()
+            } else {
+                p.dim
+            };
+            if r.hovered() {
                 ui.painter()
-                    .rect_filled(rect, 3.0, color.gamma_multiply(0.25));
+                    .rect_filled(rect, 3.0, p.dim.gamma_multiply(0.25));
             }
             ui.painter()
                 .text(center, Align2::CENTER_CENTER, ">", FONT, color);
