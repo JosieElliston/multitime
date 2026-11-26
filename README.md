@@ -14,7 +14,7 @@ cargo run [file]  # default: solve.txt
 there are four elements:
 
 - two **puzzle views** show the state at the caret.
-- the **timeline** shows the full tree: a dot for each token, and a tick for each line break.
+- the **timeline** shows the full tree: a dot for each token, and a tick for each line break that doesn't end a comment.
 - the **text box** shows the notation of one path down the tree.
 
 there's one caret and one selection, shared by the text box and the timeline.

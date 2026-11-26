@@ -1167,8 +1167,12 @@ impl App {
                     level
                 };
                 for (i, t) in tokens.iter().enumerate() {
-                    // A line break is a tick in the gap before the token.
-                    if i > 0 && s.text[tokens[i - 1].span.end..t.span.start].contains('\n') {
+                    // A line break is a tick in the gap before the token, but a
+                    // comment always ends one, so it stands for it.
+                    if i > 0
+                        && tokens[i - 1].kind != TokenKind::Comment
+                        && s.text[tokens[i - 1].span.end..t.span.start].contains('\n')
+                    {
                         let g = at(node, i as f32 * TIMELINE_STEP);
                         painter.line_segment([g - vec2(0.0, 6.0), g + vec2(0.0, 6.0)], line);
                     }
