@@ -1548,16 +1548,28 @@ fn selecting_by_meaning() {
     assert_eq!(presses(&mut s, "<<<<<<<<", false), back);
 
     // The first press always grows, either way. With no sibling that way,
-    // it's the parent, which can grow the other way too.
+    // it's all of the siblings, which can grow the other way too, and then
+    // the parent.
     let mut s = at_caret("[U|' R : F]2' U' (R' L)2");
     assert_eq!(
         presses(&mut s, "<<<<>", false),
         [
             "[«U'» R : F]2' U' (R' L)2",
             "[«U' R» : F]2' U' (R' L)2",
-            "«[U' R : F]»2' U' (R' L)2",
+            "[«U' R : F»]2' U' (R' L)2",
             "«[U' R : F]»2' U' (R' L)2",
             "[«U' R : F»]2' U' (R' L)2",
+        ]
+    );
+    // From the middle of the right side.
+    let mut s = at_caret("[U' : R |F D]");
+    assert_eq!(
+        presses(&mut s, ">>>>", false),
+        [
+            "[U' : R «F» D]",
+            "[U' : R «F D»]",
+            "[U' : «R F D»]",
+            "[«U' : R F D»]",
         ]
     );
 }
@@ -1624,14 +1636,16 @@ fn selecting_by_meaning_crosses_bubbles() {
 fn selecting_by_meaning_by_runs() {
     let mut s = at_caret("R |U F [D, B] L\nB' D2");
     assert_eq!(
-        presses(&mut s, ">>>>><", true),
+        presses(&mut s, ">>>>>><", true),
         [
             "R «U F» [D, B] L\nB' D2",
             "R «U F [D, B]» L\nB' D2",
             "R «U F [D, B] L»\nB' D2",
             "R «U F [D, B] L\nB' D2»",
-            "R «U F [D, B] L\nB' D2»",
-            "R «U F [D, B] L»\nB' D2",
+            // At the end of the path, all of it.
+            "«R U F [D, B] L\nB' D2»",
+            "«R U F [D, B] L\nB' D2»",
+            "«R U F [D, B] L»\nB' D2",
         ]
     );
 }

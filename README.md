@@ -65,8 +65,8 @@ notation is a tree. its leaves are moves, pauses, comments and multipliers. a gr
 Shift+Option+an arrow:
 
 - snaps a selection that isn't semantic to the smallest one that covers it, such as a caret partway through a move to that move.
-- toward the caret's end of the selection, or either way from a caret or a double or triple click, grows it: adds the next sibling that way, or with none, selects the parent. so from `[U|' R : F]2' U' (R' L)2`, Right selects `U'`, `U' R`, `U' R : F`, `[U' R : F]`, `[U' R : F]2'`, and so on, a sibling at a time.
-- toward the anchor's end, undoes a grow: removes the sibling at the caret's end, or goes into a lone group. that's exact, but for a grow that went to the parent from partway through it: undoing that selects all of the parent.
+- toward the caret's end of the selection, or either way from a caret or a double or triple click, grows it: adds the next sibling that way. with none, it takes all of the siblings, and with all of them, it selects the parent. so from `[U|' R : F]2' U' (R' L)2`, Right selects `U'`, `U' R`, `U' R : F`, `[U' R : F]`, `[U' R : F]2'`, and so on, a sibling at a time.
+- toward the anchor's end, undoes a grow: removes the sibling at the caret's end, or goes into a lone group. that's exact, but for a grow that took all of the siblings from partway through them: undoing that removes one from the caret's end.
 
 it goes across bubbles, but a selection in a bubble stays in it, as with the mouse. in twist mode, a run of moves on one line counts as one sibling, so from the middle of one, it goes to its end.
 

@@ -335,8 +335,9 @@ impl Model {
         plain(a) && plain(b) && a.seg == b.seg && a.lines.1 == b.lines.0
     }
 
-    /// Adds the next sibling on one side, or at the end of the container,
-    /// becomes its parent. Skips steps that don't change the selected text.
+    /// Adds the next sibling on one side. With none, takes all of the
+    /// siblings, and with all of them, becomes their parent. Skips steps that
+    /// don't change the selected text.
     /// With `runs`, a run of moves on one line is one sibling, and a selection
     /// that starts partway through one goes to its end.
     pub fn grow(&self, mut s: Sel, forward: bool, runs: bool) -> Sel {
@@ -365,12 +366,15 @@ impl Model {
             }
             return Some(Sel { lo, ..s });
         }
+        if s.lo > 0 || s.hi < n {
+            return Some(Sel { lo: 0, hi: n, ..s });
+        }
         match s.c {
             Container::Top => None,
-            Container::Side(g, k) => Some(Sel {
+            Container::Side(g, _) => Some(Sel {
                 c: Container::Sides(g),
-                lo: k,
-                hi: k + 1,
+                lo: 0,
+                hi: self.sides(g).len(),
             }),
             Container::Sides(g) => {
                 let (c, i) = self.parent[g];
@@ -385,8 +389,8 @@ impl Model {
 
     /// Undoes a `grow` toward the head, which is at the end if `head_forward`:
     /// removes the sibling there, or if it's the only one and a group, goes
-    /// into it. Undoes it exactly unless that grow went out of a container
-    /// from partway through it: then this goes to all of the inside.
+    /// into it. Undoes it exactly unless that grow took all of the siblings
+    /// from partway through them: then this removes one from the head's end.
     pub fn shrink(&self, mut s: Sel, head_forward: bool, runs: bool) -> Sel {
         // One side is the same as its items.
         if let Container::Sides(g) = s.c
