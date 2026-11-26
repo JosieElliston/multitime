@@ -119,6 +119,14 @@ impl eframe::App for App {
     }
 }
 
+/// The color of the token at `i`. A multiplier takes its bracket's.
+fn color_of(tokens: &[notation::Token], i: usize) -> Color32 {
+    match tokens[i].kind {
+        TokenKind::Multiplier if i > 0 => token_color(tokens[i - 1].kind),
+        kind => token_color(kind),
+    }
+}
+
 fn token_color(kind: TokenKind) -> Color32 {
     match kind {
         TokenKind::Move => MOVE,
@@ -128,7 +136,7 @@ fn token_color(kind: TokenKind) -> Color32 {
             kind: GroupKind::Niss,
             ..
         } => NISS,
-        TokenKind::Open | TokenKind::Sep | TokenKind::Close { .. } => GROUP,
+        TokenKind::Open | TokenKind::Sep | TokenKind::Close { .. } | TokenKind::Multiplier => GROUP,
         TokenKind::BadClose | TokenKind::Stray | TokenKind::Error => ERROR,
     }
 }
@@ -382,7 +390,12 @@ impl App {
                             self.session.step_line(key == Key::ArrowRight, m.shift);
                         }
                         Key::ArrowLeft | Key::ArrowRight if m.alt && !m.command && !m.ctrl => {
-                            self.session.step_word(key == Key::ArrowRight, m.shift);
+                            let forward = key == Key::ArrowRight;
+                            if m.shift {
+                                self.session.select_by_meaning(forward, false);
+                            } else {
+                                self.session.step_word(forward, false);
+                            }
                         }
                         Key::Backspace | Key::Delete if m.alt && !m.command && !m.ctrl => {
                             self.session.delete(key == Key::Delete);
@@ -413,7 +426,8 @@ impl App {
                         let s = &mut self.session;
                         match (delete, modifiers.command) {
                             (false, true) => s.step_segment(forward, modifiers.shift),
-                            (false, false) => s.step_run(forward, modifiers.shift),
+                            (false, false) if modifiers.shift => s.select_by_meaning(forward, true),
+                            (false, false) => s.step_run(forward, false),
                             (true, by_segment) => s.delete_to(forward, by_segment),
                         }
                         return false;
@@ -1147,8 +1161,13 @@ impl App {
                     level
                 };
                 for (i, t) in tokens.iter().enumerate() {
+                    // A line break is a tick in the gap before the token.
+                    if i > 0 && s.text[tokens[i - 1].span.end..t.span.start].contains('\n') {
+                        let g = at(node, i as f32 * TIMELINE_STEP);
+                        painter.line_segment([g - vec2(0.0, 6.0), g + vec2(0.0, 6.0)], line);
+                    }
                     let c = at(node, (i as f32 + 0.5) * TIMELINE_STEP);
-                    let col = token_color(t.kind).gamma_multiply(if on_path { 1.0 } else { 0.55 });
+                    let col = color_of(&tokens, i).gamma_multiply(if on_path { 1.0 } else { 0.55 });
                     match t.kind {
                         TokenKind::Open => {
                             open.push((t.span.start, c.x, 0));
@@ -1413,7 +1432,7 @@ fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
             }
         }
         let mut at = 0;
-        for t in &parsed.tokens {
+        for (i, t) in parsed.tokens.iter().enumerate() {
             add(&seg[at..t.span.start], DIM);
             let unclosed = parsed.open.iter().any(|g| g.span == t.span);
             let color = if unclosed {
@@ -1421,7 +1440,7 @@ fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
             } else if niss.contains(&t.span.start) && !t.kind.is_error() {
                 NISS
             } else {
-                token_color(t.kind)
+                color_of(&parsed.tokens, i)
             };
             add(&seg[t.span.clone()], color);
             at = t.span.end;

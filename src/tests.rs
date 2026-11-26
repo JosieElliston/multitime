@@ -871,7 +871,10 @@ fn unit_examples() {
         ("R// a b\n|U", Token, "R// a b\n«U»"),
         // A bracket or separator is its group.
         ("x |[R, U] y", Token, "x «[R, U]» y"),
-        ("x [R|, U] y", Token, "x «[R, U]» y"),
+        // But a separator is inside its group, so it's the insides first.
+        ("x [R|, U] y", Token, "x [«R, U»] y"),
+        ("x [R|, U] y", Run, "x «[R, U]» y"),
+        ("x [R |: U]2 y", Run, "x «[R : U]»2 y"),
         ("x [R, U|] y", Token, "x «[R, U]» y"),
         ("x [R, U]|2 y", Token, "x «[R, U]2» y"),
         ("|^(R U", Token, "«^(R U»"),
@@ -1147,10 +1150,20 @@ fn fork_then_join_keeps_the_moves() {
     let mut rng = Rng(31337);
     for _ in 0..10_000 {
         let text = rng.text(12);
+        let off = rng.off(&text);
+        // Forking between a group and its multiplier is a user error, like a
+        // twist there: the multiplier is left on its own.
+        if parse(&text)
+            .tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::Multiplier && t.span.start == off)
+        {
+            continue;
+        }
         let mut s = Session::new(Doc::new(&text));
         s.go_to(Pos {
             seg: s.doc().root(),
-            off: rng.off(&text),
+            off,
         });
         s.fork();
         let (forked, inside) = (s.caret().seg, s.inside());
@@ -1437,15 +1450,220 @@ fn fmc_tools_across_forks() {
 #[test]
 fn double_click_leaves_out_the_multiplier() {
     let t = "R [U, F]2' D";
-    // On a bracket or separator, the group without its multiplier, and on
-    // that, all of it.
-    for off in [2, 5, 7] {
+    // On a bracket, the group without its multiplier, and on that, all of it.
+    for off in [2, 7] {
         assert_eq!(unit_at(t, off, Unit::Token), Some(2..8), "{off}");
     }
+    assert_eq!(unit_at(t, 5, Unit::Run), Some(2..8));
     for off in [8, 9] {
         assert_eq!(unit_at(t, off, Unit::Token), Some(2..10), "{off}");
     }
     // Covering the brackets is enough to keep a range from growing.
     assert_eq!(close_groups(t, 2..8), 2..8);
     assert_eq!(close_groups(t, 4..9), 2..10);
+    // A range up to the closing bracket leaves the multiplier out.
+    assert_eq!(close_groups(t, 6..8), 2..8);
+}
+
+#[test]
+fn multipliers_are_tokens() {
+    let t = "R [U, F]2' D";
+    let words: Vec<_> = parse(t).tokens.iter().map(|k| &t[k.span.clone()]).collect();
+    assert_eq!(words, ["R", "[", "U", ",", "F", "]", "2'", "D"]);
+    // Between the bracket and the multiplier is the state after one pass.
+    let st = |s: &str| parse(s).op.right;
+    assert_eq!(st(&t[..8]), st("R [U, F]"));
+    // Deleting the multiplier leaves the group, and deleting a bracket takes
+    // the multiplier too.
+    assert_eq!(del("R [U, F]2'| D", false), "R [U, F]| D");
+    assert_eq!(del("R [U, F]|2' D", false), "R| D");
+    // A twist there is a user error: it splits them, as in plain text.
+    let (new, _) = twist("[U, F]2", 6, "R", Normal);
+    assert_eq!(new, "[U, F] R 2");
+    assert!(
+        parse(&new)
+            .tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::Error)
+    );
+}
+
+/// The text with the selection in `«»`, or the caret as `|`. Bubbles are `>`.
+fn shown(s: &Session) -> String {
+    let t: String = s
+        .text()
+        .chars()
+        .map(|c| match c {
+            MARK => '>',
+            OPEN | END => '\n',
+            c => c,
+        })
+        .collect();
+    let (a, c) = (s.anchor_offset(), s.caret_offset());
+    let (lo, hi) = (a.min(c), a.max(c));
+    if lo == hi {
+        format!("{}|{}", &t[..lo], &t[lo..])
+    } else {
+        format!("{}«{}»{}", &t[..lo], &t[lo..hi], &t[hi..])
+    }
+}
+
+/// A session with the caret at the `|` in `text`.
+fn at_caret(text: &str) -> Session {
+    let off = text.find('|').unwrap();
+    let mut s = Session::new(Doc::new(&text.replace('|', "")));
+    s.set_caret_offset(off);
+    s
+}
+
+/// What each press of Shift+Option+an arrow selects.
+fn presses(s: &mut Session, keys: &str, runs: bool) -> Vec<String> {
+    keys.chars()
+        .map(|k| {
+            s.select_by_meaning(k == '>', runs);
+            shown(s)
+        })
+        .collect::<Vec<_>>()
+}
+
+#[test]
+fn selecting_by_meaning() {
+    let mut s = at_caret("[U|' R : F]2' U' (R' L)2");
+    let grown = [
+        "[«U'» R : F]2' U' (R' L)2",
+        "[«U' R» : F]2' U' (R' L)2",
+        "[«U' R : F»]2' U' (R' L)2",
+        "«[U' R : F]»2' U' (R' L)2",
+        "«[U' R : F]2'» U' (R' L)2",
+        "«[U' R : F]2' U'» (R' L)2",
+        "«[U' R : F]2' U' (R' L)»2",
+        "«[U' R : F]2' U' (R' L)2»",
+    ];
+    assert_eq!(presses(&mut s, ">>>>>>>>", false), grown);
+    // At the end, nothing more.
+    assert_eq!(presses(&mut s, ">", false), [grown[7]]);
+    // Toward the anchor, each step undoes one.
+    let mut back: Vec<_> = grown[..7].iter().rev().map(|s| s.to_string()).collect();
+    back.push("[|U' R : F]2' U' (R' L)2".to_owned());
+    assert_eq!(presses(&mut s, "<<<<<<<<", false), back);
+
+    // The first press always grows, either way. With no sibling that way,
+    // it's the parent, which can grow the other way too.
+    let mut s = at_caret("[U|' R : F]2' U' (R' L)2");
+    assert_eq!(
+        presses(&mut s, "<<<<>", false),
+        [
+            "[«U'» R : F]2' U' (R' L)2",
+            "[«U' R» : F]2' U' (R' L)2",
+            "«[U' R : F]»2' U' (R' L)2",
+            "«[U' R : F]»2' U' (R' L)2",
+            "[«U' R : F»]2' U' (R' L)2",
+        ]
+    );
+}
+
+#[test]
+fn selecting_by_meaning_ignores_line_breaks() {
+    let mut s = at_caret("|R\n[U,\nF]\n// c\nD");
+    assert_eq!(
+        presses(&mut s, ">>>>", false),
+        [
+            "«R»\n[U,\nF]\n// c\nD",
+            "«R\n[U,\nF]»\n// c\nD",
+            "«R\n[U,\nF]\n// c»\nD",
+            "«R\n[U,\nF]\n// c\nD»",
+        ]
+    );
+    let mut s = at_caret("[U,\n|F]");
+    assert_eq!(presses(&mut s, "<<", false), ["[U,\n«F»]", "[«U,\nF»]"]);
+}
+
+#[test]
+fn selecting_by_meaning_snaps_first() {
+    // A selection that isn't semantic snaps to the smallest one that covers
+    // it, whichever way.
+    let mut s = Session::new(Doc::new("R [U F, D] B"));
+    let root = s.doc().root();
+    s.set_selection(Pos { seg: root, off: 1 }, Pos { seg: root, off: 6 });
+    assert_eq!(presses(&mut s, "<", false), ["R «[U F, D]» B"]);
+    s.set_selection(Pos { seg: root, off: 5 }, Pos { seg: root, off: 8 });
+    assert_eq!(
+        presses(&mut s, ">>", false),
+        ["R [«U F, D»] B", "R «[U F, D]» B"]
+    );
+    // Whitespace at the edges doesn't count.
+    s.set_selection(Pos { seg: root, off: 0 }, Pos { seg: root, off: 2 });
+    assert_eq!(presses(&mut s, ">", false), ["«R [U F, D]» B"]);
+    // A click's selection has no direction.
+    let u = s.unit_at(Pos { seg: root, off: 3 }, Unit::Token).unwrap();
+    s.select_units(u, u);
+    assert_eq!(presses(&mut s, "<", false), ["R [«U F», D] B"]);
+}
+
+#[test]
+fn selecting_by_meaning_crosses_bubbles() {
+    let mut s = Session::new(Doc::new("R U >F D> L"));
+    let root = s.doc().root();
+    s.go_to(Pos { seg: root, off: 2 });
+    assert_eq!(
+        presses(&mut s, ">>>>", false),
+        [
+            "R «U»\n>\nF D\n>\nL",
+            "R «U\n>\nF» D\n>\nL",
+            "R «U\n>\nF D»\n>\nL",
+            "R «U\n>\nF D\n>\nL»",
+        ]
+    );
+    assert_eq!(
+        presses(&mut s, "<<", false),
+        ["R «U\n>\nF D»\n>\nL", "R «U\n>\nF» D\n>\nL"]
+    );
+}
+
+#[test]
+fn selecting_by_meaning_by_runs() {
+    let mut s = at_caret("R |U F [D, B] L\nB' D2");
+    assert_eq!(
+        presses(&mut s, ">>>>><", true),
+        [
+            "R «U F» [D, B] L\nB' D2",
+            "R «U F [D, B]» L\nB' D2",
+            "R «U F [D, B] L»\nB' D2",
+            "R «U F [D, B] L\nB' D2»",
+            "R «U F [D, B] L\nB' D2»",
+            "R «U F [D, B] L»\nB' D2",
+        ]
+    );
+}
+
+#[test]
+fn selections_by_meaning_stay_semantic() {
+    let mut rng = Rng(4242);
+    for _ in 0..3_000 {
+        let text = rng.text(14);
+        let mut s = Session::new(Doc::new(&text));
+        s.set_caret_offset(rng.off(&text));
+        let runs = rng.below(2) == 0;
+        for _ in 0..8 {
+            s.select_by_meaning(rng.below(2) == 0, runs);
+            let (a, c) = (s.anchor_offset(), s.caret_offset());
+            let t = s.text();
+            assert!(t.is_char_boundary(a) && t.is_char_boundary(c), "{text:?}");
+            // Already semantic, so the next press doesn't just snap. Keep
+            // going the same way and it's a superset.
+            let (lo, hi) = (a.min(c), a.max(c));
+            if lo == hi {
+                continue;
+            }
+            let mut t2 = s.clone();
+            t2.select_by_meaning(c >= a, runs);
+            let (a2, c2) = (t2.anchor_offset(), t2.caret_offset());
+            assert!(
+                a2.min(c2) <= lo && hi <= a2.max(c2),
+                "{text:?}: {lo}..{hi} grew to {}..{}",
+                a2.min(c2),
+                a2.max(c2)
+            );
+        }
+    }
 }

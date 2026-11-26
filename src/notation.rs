@@ -85,8 +85,10 @@ pub enum TokenKind {
     Close {
         kind: GroupKind,
         open: usize,
-        has_multiplier: bool,
     },
+    /// Right after a closing bracket, such as the `2'` in `[R, U]2'`. The
+    /// state between the bracket and it is that of one pass.
+    Multiplier,
     /// Ends a group that is malformed, such as `[R]`. Plays its contents.
     BadClose,
     /// Closing bracket or separator that doesn't belong to any group.
@@ -271,7 +273,7 @@ pub fn parse(text: &str) -> Parsed {
     while i < text.len() {
         let rest = &text[i..];
         let c = rest.chars().next().expect("in bounds");
-        let start = i;
+        let mut start = i;
         if c.is_whitespace() {
             i += c.len_utf8();
             continue;
@@ -313,21 +315,28 @@ pub fn parse(text: &str) -> Parsed {
                     .unwrap_or(text.len() - i);
                 let prime = text[i + mult_len..].starts_with('\'') as usize;
                 let mult = &text[i..i + mult_len + prime];
-                i += mult.len();
                 let no_sep = frame.group.kind == GroupKind::Binary && frame.lhs.is_none();
                 let parsed_mult = parse_multiplier(mult);
                 let op = frame.closed().pow(parsed_mult.unwrap_or(1));
                 let acc = stack.last_mut().map_or(&mut top, |f| &mut f.op);
                 *acc = acc.then(&op);
-                if no_sep || parsed_mult.is_none() {
-                    TokenKind::BadClose
-                } else {
-                    TokenKind::Close {
-                        kind: frame.group.kind,
-                        open: frame.group.span.start,
-                        has_multiplier: !mult.is_empty(),
-                    }
+                tokens.push(Token {
+                    span: start..i,
+                    kind: if no_sep || parsed_mult.is_none() {
+                        TokenKind::BadClose
+                    } else {
+                        TokenKind::Close {
+                            kind: frame.group.kind,
+                            open: frame.group.span.start,
+                        }
+                    },
+                });
+                if mult.is_empty() {
+                    continue;
                 }
+                start = i;
+                i += mult.len();
+                TokenKind::Multiplier
             } else {
                 TokenKind::Stray
             }
@@ -386,7 +395,7 @@ pub fn parse(text: &str) -> Parsed {
     }
 }
 
-fn opener(s: &str) -> Option<(GroupKind, usize)> {
+pub(crate) fn opener(s: &str) -> Option<(GroupKind, usize)> {
     Some(match s.as_bytes() {
         [b'[', ..] => (GroupKind::Binary, 1),
         [b'(', ..] => (GroupKind::Plain, 1),
@@ -445,9 +454,8 @@ pub fn twist(text: &str, caret: usize, mv: &str, inversion: Inversion) -> (Strin
         let close = before.tokens.last().and_then(|t| match t.kind {
             TokenKind::Close {
                 kind: GroupKind::Niss,
-                has_multiplier: false,
                 ..
-            } => Some(t.span.end - 1),
+            } => Some(t.span.start),
             _ => None,
         });
         let multiplied = text[at..].starts_with(|c: char| c.is_ascii_digit() || c == '\'');
@@ -495,8 +503,9 @@ pub fn gap_offset(text: &str, gap: usize) -> usize {
     }
 }
 
-/// Span of the whole group that a bracket or separator belongs to, or just the
-/// token's own span if it's anything else (or the group never closes).
+/// Span of the whole group that a bracket or separator belongs to, with its
+/// multiplier, or just the token's own span if it's anything else (or the
+/// group never closes).
 fn deletion_span(text: &str, tokens: &[Token], index: usize) -> Range<usize> {
     // Index of the opener, and indices of the group's tokens so far.
     let mut stack: Vec<(usize, Vec<usize>)> = vec![];
@@ -509,7 +518,11 @@ fn deletion_span(text: &str, tokens: &[Token], index: usize) -> Range<usize> {
         } else if s.starts_with([')', ']']) && t.kind != TokenKind::Stray {
             let (open, members) = stack.pop().expect("closes a group");
             if i == index || members.contains(&index) {
-                return tokens[open].span.start..t.span.end;
+                let end = match tokens.get(i + 1) {
+                    Some(m) if !is_spaced(m.kind) => m.span.end,
+                    _ => t.span.end,
+                };
+                return tokens[open].span.start..end;
             }
         }
     }
@@ -583,16 +596,17 @@ pub fn close_up(mut before: &str, after: &str) -> (String, Range<usize>, usize) 
 /// What a double click (`Token`) or a triple click (`Run`) selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
-    /// A token, or the whole group of a bracket or separator. In a comment,
-    /// a word, as in any text.
+    /// A token, or the whole group of a bracket, or a separator's group's
+    /// insides. In a comment, a word, as in any text.
     Token,
-    /// Tokens up to the nearest bracket, separator or line break, or a group's
-    /// insides.
+    /// Tokens up to the nearest bracket, separator or line break, or a
+    /// bracket's group's insides, or a separator's whole group.
     Run,
 }
 
-/// A bracketed group: its whole span, its tokens' indices, and the span between
-/// its brackets. An unclosed group runs to the last token.
+/// A bracketed group: its whole span with any multiplier, its tokens' indices
+/// (with the multiplier's), and the span between its brackets. An unclosed
+/// group runs to the last token.
 struct Group {
     outer: Range<usize>,
     members: Vec<usize>,
@@ -627,10 +641,21 @@ fn groups(text: &str, tokens: &[Token]) -> Vec<Group> {
             g.outer.end = t.span.end;
             g.inner.end = t.span.start;
             out.push(g);
+        } else if !is_spaced(t.kind) {
+            // A multiplier: the group just closed is the last one out.
+            let g = out.last_mut().expect("just closed");
+            g.members.push(i);
+            g.outer.end = t.span.end;
         }
     }
     out.extend(stack);
     out
+}
+
+/// Whether a token isn't a multiplier, which only ever comes right after the
+/// bracket that closes its group.
+fn is_spaced(kind: TokenKind) -> bool {
+    kind != TokenKind::Multiplier
 }
 
 /// The unit at `off`, for a click on the character starting there. Whitespace
@@ -656,6 +681,12 @@ pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
         })?;
     let groups = groups(text, &tokens);
     if let Some(g) = groups.iter().find(|g| g.members.contains(&index)) {
+        // A separator is inside the group, so it's the insides first.
+        let unit = match unit {
+            _ if tokens[index].kind != TokenKind::Sep => unit,
+            Unit::Token => Unit::Run,
+            Unit::Run => Unit::Token,
+        };
         return Some(match unit {
             // On the multiplier, that too.
             Unit::Token if off >= g.brackets_end() && g.outer.contains(&off) => g.outer.clone(),
@@ -759,7 +790,8 @@ pub fn run_gap(text: &str, gap: usize, forward: bool) -> usize {
 }
 
 /// Grows a range to take in the whole of any group whose bracket it covers,
-/// unless it's within the group's brackets.
+/// unless it's within the group's brackets. That's without the multiplier,
+/// unless the range has some of it.
 pub fn close_groups(text: &str, mut r: Range<usize>) -> Range<usize> {
     let tokens = parse(text).tokens;
     let groups = groups(text, &tokens);
@@ -771,7 +803,12 @@ pub fn close_groups(text: &str, mut r: Range<usize>) -> Range<usize> {
             overlaps && !inside && !covers
         });
         let Some(g) = grow else { return r };
-        r = r.start.min(g.outer.start)..r.end.max(g.outer.end);
+        let end = if r.end > g.brackets_end() {
+            g.outer.end
+        } else {
+            g.brackets_end()
+        };
+        r = r.start.min(g.outer.start)..r.end.max(end);
     }
 }
 
@@ -850,11 +887,20 @@ fn seq(text: &str, tokens: &[Token], i: &mut usize, at: &mut usize) -> Option<Ve
                 }
                 *i += 1;
                 *at = next.span.end;
+                let mut close = text[next.span.clone()].to_owned();
+                if let Some(m) = tokens.get(*i)
+                    && m.kind == TokenKind::Multiplier
+                    && m.span.start == next.span.end
+                {
+                    close.push_str(&text[m.span.clone()]);
+                    *i += 1;
+                    *at = m.span.end;
+                }
                 Node::Group {
                     open: s.to_owned(),
                     lhs,
                     rhs,
-                    close: text[next.span.clone()].to_owned(),
+                    close,
                 }
             }
             _ => return None,
@@ -1040,12 +1086,13 @@ pub fn invert(text: &str, range: Range<usize>) -> Option<(String, Range<usize>)>
     // Inverting `X` in `Xn` is the same as inverting `Xn`, so a range up to a
     // multiplier takes it in.
     let end = range.end;
-    let range = match tokens
-        .iter()
-        .find(|t| t.span.start < end && end < t.span.end)
-    {
-        Some(t) if matches!(t.kind, TokenKind::Close { .. }) && t.span.start + 1 == end => {
-            range.start..t.span.end
+    let range = match tokens.iter().position(|t| t.span.start == end) {
+        Some(i)
+            if tokens[i].kind == TokenKind::Multiplier
+                && i > 0
+                && matches!(tokens[i - 1].kind, TokenKind::Close { .. }) =>
+        {
+            range.start..tokens[i].span.end
         }
         _ => range,
     };

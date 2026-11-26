@@ -3,6 +3,7 @@
 use crate::doc::{Doc, Pos, SegId};
 use crate::notation::{self, Inversion, Parsed, Unit};
 use crate::puzzle::Perm;
+use crate::select;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -114,6 +115,10 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Where and when the last typing edit ended, to coalesce typing.
     typing: Option<(Pos, Instant)>,
+    /// The anchor and caret of a selection that a double or triple click
+    /// made. While that's still the selection, it has no direction, so
+    /// either Shift+Option+arrow grows it.
+    clicked: Option<(Pos, Pos)>,
 }
 
 impl Session {
@@ -129,6 +134,7 @@ impl Session {
             undo: vec![],
             redo: vec![],
             typing: None,
+            clicked: None,
         };
         s.show(root);
         s.caret = s.doc.end(s.tip);
@@ -287,6 +293,7 @@ impl Session {
         }
         self.typing = None;
         self.anchor = None;
+        self.clicked = None;
     }
     /// Like `record`, but keeps the selection.
     fn record_keeping_selection(&mut self, before: Snapshot) {
@@ -415,8 +422,7 @@ impl Session {
         ))
     }
     /// The same for the timeline's cell for the token at `pos`. The timeline
-    /// goes by tokens, so a unit there ends after a whole token: a group's
-    /// takes in its multiplier.
+    /// goes by tokens, so a unit there ends after a whole token.
     pub fn unit_on_timeline(&self, pos: Pos, unit: Unit) -> Option<(Pos, Pos)> {
         let (start, mut end) = self.unit_at(pos, unit)?;
         let text = &self.doc.get(end.seg).text;
@@ -473,6 +479,63 @@ impl Session {
         } else {
             self.set_selection(start, end);
         }
+        self.clicked = (anchor == target).then_some((self.anchor(), self.caret));
+    }
+
+    /// Shift+Option+arrows: grows or shrinks the selection by meaning. See
+    /// `select`. A selection that isn't semantic snaps to the smallest one
+    /// that covers it. Otherwise, toward the caret's end (or either way with
+    /// no selection, or one that a click made), it grows, and toward the
+    /// anchor's, it shrinks. With `runs`, as in twist mode, a run of moves on
+    /// one line counts as one. In a bubble, it's `step_word` or `step_run`.
+    pub fn select_by_meaning(&mut self, forward: bool, runs: bool) {
+        if self.in_bubble() || self.bubble_selection() {
+            if runs {
+                self.step_run(forward, true);
+            } else {
+                self.step_word(forward, true);
+            }
+            return;
+        }
+        let path = self.doc.path(self.tip);
+        let texts: Vec<&str> = path
+            .iter()
+            .map(|s| self.doc.get(*s).text.as_str())
+            .collect();
+        let model = select::Model::new(&texts);
+        let pt = |p: Pos| {
+            (
+                path.iter().position(|s| *s == p.seg).expect("on path"),
+                p.off,
+            )
+        };
+        let (a, c) = (pt(self.anchor()), pt(self.caret));
+        let head_forward = c >= a;
+        let (lo, hi) = model.trim(a.min(c), a.max(c));
+        let sel = model.join(lo, hi);
+        let semantic = if lo == hi {
+            sel.lo == sel.hi
+        } else {
+            model.span(sel) == (lo, hi)
+        };
+        let oriented = a != c && self.clicked != Some((self.anchor(), self.caret));
+        let (new, head) = if !semantic {
+            (sel, forward)
+        } else if !oriented || forward == head_forward {
+            (model.grow(sel, forward, runs), forward)
+        } else {
+            (model.shrink(sel, head_forward, runs), head_forward)
+        };
+        let (start, end) = model.span(new);
+        let pos = |(i, off): select::Pt| Pos { seg: path[i], off };
+        if start == end {
+            self.go_to(pos(start));
+        } else if head {
+            self.set_selection(pos(start), pos(end));
+        } else {
+            self.set_selection(pos(end), pos(start));
+        }
+        self.clicked = None;
     }
     /// Moves the caret to the end of a segment.
     pub fn select(&mut self, seg: SegId) {

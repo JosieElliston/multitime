@@ -14,14 +14,14 @@ cargo run [file]  # default: solve.txt
 there are four elements:
 
 - two **puzzle views** show the state at the caret.
-- the **timeline** shows the full tree.
+- the **timeline** shows the full tree: a dot for each token, and a tick for each line break.
 - the **text box** shows the notation of one path down the tree.
 
 there's one caret and one selection, shared by the text box and the timeline.
 
 ## modes
 
-there are two input modes: **text mode** edits by character, while **twist mode** edits by token. a token is a twist, a bracket, a comment, or a bubble.
+there are two input modes: **text mode** edits by character, while **twist mode** edits by token. a token is a twist, a bracket, a separator, a multiplier, a comment, or a bubble. a multiplier is a token of its own, so between `]` and `2` is the state after one pass.
 
 esc cycles between focus on the text box and the two puzzles.
 
@@ -30,6 +30,7 @@ esc cycles between focus on the text box and the two puzzles.
 | Most keys | insert text | insert a twist (see [twist keys](#twist-keys)) |
 | Left, Right | move by character | move by token |
 | Option+Left, Option+Right | move by token | move by run (see [mouse](#mouse)) |
+| Shift+Option+Left, Shift+Option+Right | select by meaning (see [selecting by meaning](#selecting-by-meaning)) | the same, but a run counts as one |
 | Cmd+Left, Cmd+Right | go to the ends of the line | go to the ends of the segment |
 | Up, Down | move by line | switch branches at the bubble before the caret |
 | Backspace, Delete | delete a character | delete a token (a bracket deletes its whole group) |
@@ -51,11 +52,23 @@ cmd+[ and cmd+], or clicking a `>`, also switch branches.
 
 in both the text box and the timeline:
 
-- double-click selects a token. on a bracket or separator, it selects the whole group. in the text box, that's without its multiplier, unless the click is on the multiplier; the timeline goes by tokens, so there it's always with it. in a comment, it selects a word.
-- triple-click selects a run: the tokens up to the nearest bracket, separator, or line break, such as one side of a commutator, or a line and its comment. on a bracket or separator, it selects what's inside the group.
-- dragging after either extends by the same unit. a drag over a bracket takes in its whole group.
+- double-click selects a token. on a bracket, it selects the whole group, without its multiplier, and on the multiplier, with it. on a separator, it selects what's inside the group, since the separator is. in a comment, it selects a word.
+- triple-click selects a run: the tokens up to the nearest bracket, separator, or line break, such as one side of a commutator, or a line and its comment. on a bracket, it selects what's inside the group, and on a separator, the whole group.
+- dragging after either extends by the same unit. a drag over a bracket takes in its whole group, and its multiplier only if the drag reaches it.
 
 a selection that starts in a bubble stays in it, and selects `>`s. any other selection takes in all of a bubble or none of it.
+
+### selecting by meaning
+
+notation is a tree. its leaves are moves, pauses, comments and multipliers. a group's children are its sides (one, or two around a `,` or `:`), and each side is a list of leaves and groups. brackets and separators are how a group is written, not leaves, and line breaks and bubbles don't count, so a selection never ends beside one. a multiplier is a leaf right after its group. a semantic selection is a run of siblings.
+
+Shift+Option+an arrow:
+
+- snaps a selection that isn't semantic to the smallest one that covers it, such as a caret partway through a move to that move.
+- toward the caret's end of the selection, or either way from a caret or a double or triple click, grows it: adds the next sibling that way, or with none, selects the parent. so from `[U|' R : F]2' U' (R' L)2`, Right selects `U'`, `U' R`, `U' R : F`, `[U' R : F]`, `[U' R : F]2'`, and so on, a sibling at a time.
+- toward the anchor's end, undoes a grow: removes the sibling at the caret's end, or goes into a lone group. that's exact, but for a grow that went to the parent from partway through it: undoing that selects all of the parent.
+
+it goes across bubbles, but a selection in a bubble stays in it, as with the mouse. in twist mode, a run of moves on one line counts as one sibling, so from the middle of one, it goes to its end.
 
 ### context menu
 

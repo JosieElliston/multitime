@@ -753,7 +753,9 @@ fn selecting_text_by_units() {
     let cases: &[(usize, Pos2, &[Pos2], &str)] = &[
         (2, pos2(x(3.0), 50.0), &[], "U'"),
         (2, pos2(x(5.0), 50.0), &[], "[F, D B]"),
-        (2, pos2(x(7.0), 50.0), &[], "[F, D B]"),
+        // A separator is inside its group: its insides, then all of it.
+        (2, pos2(x(7.0), 50.0), &[], "F, D B"),
+        (3, pos2(x(7.0), 50.0), &[], "[F, D B]"),
         (3, pos2(x(11.0), 50.0), &[], "D B"),
         (3, pos2(x(5.0), 50.0), &[], "F, D B"),
         (3, pos2(x(1.0), 67.0), &[], "B' D2 // cd"),
@@ -897,12 +899,17 @@ fn selecting_timeline_by_units() {
         assert_eq!(copied(&mut h), want, "{n} at {pos:?} through {path:?}");
     }
     assert_eq!(file(&h), "R U [F, D] B\n>\n  L\n");
-    // The timeline goes by tokens, so a group takes in its multiplier, unlike
-    // in the text box.
+    // A multiplier has its own cell, as in the text box: a bracket's group
+    // is without it, and the multiplier's is with it.
     let mut h = harness("R [F, D]2'");
-    for i in [1.0, 3.0, 5.0] {
+    for (i, want) in [
+        (1.0, "[F, D]"),
+        (3.0, "F, D"),
+        (5.0, "[F, D]"),
+        (6.0, "[F, D]2'"),
+    ] {
         clicks(&mut h, 2, pos2(x(i), y), &[]);
-        assert_eq!(copied(&mut h), "[F, D]2'", "{i}");
+        assert_eq!(copied(&mut h), want, "{i}");
     }
 }
 
@@ -920,9 +927,13 @@ fn twist_mode_runs_and_segments() {
     assert_eq!(caret(&h).1, 0);
     key(&mut h, Modifiers::ALT, Key::ArrowRight);
     assert_eq!(caret(&h).1, 3);
+    // By meaning: the group, then the next run.
     key(&mut h, Modifiers::ALT | Modifiers::SHIFT, Key::ArrowRight);
+    assert_eq!(copied(&mut h), "[F, D]");
     key(&mut h, Modifiers::ALT | Modifiers::SHIFT, Key::ArrowRight);
-    assert_eq!(copied(&mut h), " [F");
+    assert_eq!(copied(&mut h), "[F, D] B");
+    key(&mut h, Modifiers::ALT | Modifiers::SHIFT, Key::ArrowLeft);
+    assert_eq!(copied(&mut h), "[F, D]");
     key(&mut h, Modifiers::COMMAND, Key::ArrowRight);
     assert_eq!(caret(&h).1, 12);
     assert_eq!(file(&h), "R U [F, D] B\n>\n  L x\n");
