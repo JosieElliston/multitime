@@ -1,17 +1,17 @@
 // aset tesa
-F' [R U: R' U']
+F' [R U: R' U']'
 [
-  R U:
-  [R', U']
+  R U: // tesa
+  F' [R', U']2 F'
 ]
 // aset tesa 
 >
-  R U
-
->
   // aset
-  R U U
+  R F' U U
   >
-    R U U F' U
+    R U (U F')2 F' U
   >
     R U U R' F'
+>
+  R U
+
