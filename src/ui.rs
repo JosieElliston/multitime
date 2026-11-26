@@ -989,27 +989,49 @@ impl App {
                     let off = notation::gap_offset(text, last);
                     stops.push((corner, Pos { seg: parent, off }));
                 }
-                let mut open_xs = vec![];
+                // Open groups: where each starts, and how many levels of
+                // groups have closed inside it so far.
+                let mut open: Vec<(usize, f32, u32)> = vec![];
+                // Ends the groups from `idx` on, and passes `level` to the one outside them.
+                let close = |open: &mut Vec<(usize, f32, u32)>, idx: usize, arc: bool| {
+                    let inner = open[idx..].iter().map(|o| o.2).max().unwrap_or(0);
+                    let level = inner + arc as u32;
+                    open.truncate(idx);
+                    if let Some(o) = open.last_mut() {
+                        o.2 = o.2.max(level);
+                    }
+                    level
+                };
                 for (i, t) in tokens.iter().enumerate() {
                     let c = at(node, (i as f32 + 0.5) * TIMELINE_STEP);
                     let col = token_color(t.kind).gamma_multiply(if on_path { 1.0 } else { 0.55 });
                     match t.kind {
                         TokenKind::Open => {
-                            open_xs.push((t.span.start, c.x));
+                            open.push((t.span.start, c.x, 0));
                             painter.circle_stroke(c, 2.5, Stroke::new(1.0, col));
                         }
-                        TokenKind::Close { open, .. } => {
-                            if let Some((_, x)) = open_xs.iter().find(|o| o.0 == open) {
-                                let y = c.y - 8.0;
+                        TokenKind::Close { open: start, .. } => {
+                            if let Some(idx) = open.iter().position(|o| o.0 == start) {
+                                let x = open[idx].1;
+                                let level = close(&mut open, idx, true);
+                                // Outer groups arc higher, so nested ones don't overlap.
+                                let rise = (8.0 + 3.0 * (level - 1) as f32).min(ROW - 8.0);
+                                let y = c.y - rise;
                                 let pts = vec![
-                                    pos2(*x, c.y - 4.0),
-                                    pos2(*x, y),
+                                    pos2(x, c.y - 4.0),
+                                    pos2(x, y),
                                     pos2(c.x, y),
                                     pos2(c.x, c.y - 4.0),
                                 ];
                                 painter.add(Shape::line(pts, Stroke::new(1.0, col)));
                             }
                             painter.circle_stroke(c, 2.5, Stroke::new(1.0, col));
+                        }
+                        TokenKind::BadClose => {
+                            if let Some(idx) = open.len().checked_sub(1) {
+                                close(&mut open, idx, false);
+                            }
+                            painter.circle_filled(c, 4.0, col);
                         }
                         TokenKind::Sep => {
                             painter.circle_stroke(c, 2.0, Stroke::new(1.0, col));
