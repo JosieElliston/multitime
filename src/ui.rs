@@ -16,14 +16,15 @@ const ACCENT: Color32 = Color32::from_rgb(255, 170, 60);
 const MOVE: Color32 = Color32::from_rgb(110, 170, 255);
 const COMMENT: Color32 = Color32::from_rgb(110, 190, 110);
 const GROUP: Color32 = Color32::from_rgb(190, 140, 255);
+const COMMUTATOR: Color32 = Color32::from_rgb(235, 200, 80);
+const CONJUGATE: Color32 = Color32::from_rgb(70, 205, 200);
 const NISS: Color32 = Color32::from_rgb(255, 120, 200);
 const ERROR: Color32 = Color32::from_rgb(255, 80, 80);
 const DIM: Color32 = Color32::from_gray(120);
 /// Caret in both the text box and the timeline.
-const CARET: Stroke = Stroke {
-    width: 2.0,
-    color: Color32::WHITE,
-};
+fn caret_stroke(ui: &Ui) -> Stroke {
+    Stroke::new(2.0, ui.visuals().strong_text_color())
+}
 /// Where hovering would put the caret.
 const GHOST_CARET: Stroke = Stroke {
     width: 2.0,
@@ -119,26 +120,71 @@ impl eframe::App for App {
     }
 }
 
-/// The color of the token at `i`. A multiplier takes its bracket's.
-fn color_of(tokens: &[notation::Token], i: usize) -> Color32 {
-    match tokens[i].kind {
-        TokenKind::Multiplier if i > 0 => token_color(tokens[i - 1].kind),
-        kind => token_color(kind),
+/// The colors of `text`'s tokens. A group's brackets, separator and
+/// multiplier are its kind's color: plain, commutator, conjugate or NISS.
+fn token_colors(text: &str, tokens: &[notation::Token]) -> Vec<Color32> {
+    let mut out: Vec<Color32> = tokens
+        .iter()
+        .map(|t| match t.kind {
+            TokenKind::Move => MOVE,
+            TokenKind::Pause => DIM,
+            TokenKind::Comment => COMMENT,
+            TokenKind::Open | TokenKind::Sep | TokenKind::Close { .. } | TokenKind::Multiplier => {
+                GROUP
+            }
+            TokenKind::BadClose | TokenKind::Stray | TokenKind::Error => ERROR,
+        })
+        .collect();
+    // The tokens of each open group, and its color once known.
+    let mut open: Vec<(Vec<usize>, Color32)> = vec![];
+    for (i, t) in tokens.iter().enumerate() {
+        match t.kind {
+            // A nested NISS is an error, but still a group.
+            TokenKind::Open | TokenKind::Error => {
+                let Some((kind, _)) = notation::opener(&text[t.span.clone()]) else {
+                    continue;
+                };
+                let color = if kind == GroupKind::Niss { NISS } else { GROUP };
+                let members = if t.kind == TokenKind::Open {
+                    vec![i]
+                } else {
+                    vec![]
+                };
+                open.push((members, color));
+            }
+            TokenKind::Sep => {
+                if let Some(g) = open.last_mut() {
+                    g.0.push(i);
+                    g.1 = if text[t.span.clone()].starts_with(',') {
+                        COMMUTATOR
+                    } else {
+                        CONJUGATE
+                    };
+                }
+            }
+            TokenKind::Close { .. } => {
+                if let Some((members, color)) = open.pop() {
+                    for j in members.into_iter().chain([i]) {
+                        out[j] = color;
+                    }
+                }
+            }
+            TokenKind::BadClose => {
+                open.pop();
+            }
+            TokenKind::Multiplier if i > 0 => out[i] = out[i - 1],
+            _ => {}
+        }
     }
-}
-
-fn token_color(kind: TokenKind) -> Color32 {
-    match kind {
-        TokenKind::Move => MOVE,
-        TokenKind::Pause => DIM,
-        TokenKind::Comment => COMMENT,
-        TokenKind::Close {
-            kind: GroupKind::Niss,
-            ..
-        } => NISS,
-        TokenKind::Open | TokenKind::Sep | TokenKind::Close { .. } | TokenKind::Multiplier => GROUP,
-        TokenKind::BadClose | TokenKind::Stray | TokenKind::Error => ERROR,
+    // Still open: the end of the text is inside them.
+    for (members, color) in open {
+        for j in members {
+            if out[j] != ERROR {
+                out[j] = color;
+            }
+        }
     }
+    out
 }
 
 // Hyperspeedcube's Rubiks3D Default preset, including ^MU.
@@ -875,7 +921,7 @@ impl App {
             ui.painter()
                 .vline(rect.center().x, rect.y_range().expand(1.5), stroke);
         };
-        paint_caret(self.session.caret_offset(), CARET);
+        paint_caret(self.session.caret_offset(), caret_stroke(ui));
         if let Some(pos) = self.preview.filter(|p| self.is_valid(*p))
             && pos != self.session.caret()
             && let Some(off) = self.session.offset_of(pos)
@@ -1145,6 +1191,7 @@ impl App {
                 let s = doc.get(seg);
                 stops.push((start, Pos { seg, off: 0 }));
                 let tokens = notation::parse(&s.text).tokens;
+                let colors = token_colors(&s.text, &tokens);
                 if let Some(parent) = s.parent {
                     let p = &nodes[&parent];
                     let from = at(p, p.len);
@@ -1183,7 +1230,7 @@ impl App {
                         painter.line_segment([g - vec2(0.0, 6.0), g + vec2(0.0, 6.0)], line);
                     }
                     let c = at(node, (i as f32 + 0.5) * TIMELINE_STEP);
-                    let col = color_of(&tokens, i).gamma_multiply(if on_path { 1.0 } else { 0.55 });
+                    let col = colors[i].gamma_multiply(if on_path { 1.0 } else { 0.55 });
                     match t.kind {
                         TokenKind::Open => {
                             open.push((t.span.start, c.x, 0));
@@ -1246,7 +1293,7 @@ impl App {
             if let Some(pos) = self.preview.filter(|p| *p != caret) {
                 paint_caret(pos, GHOST_CARET);
             }
-            paint_caret(caret, CARET);
+            paint_caret(caret, caret_stroke(ui));
 
             let pointer = r.interact_pointer_pos().or(r.hover_pos())?;
             // Whether a selection can go between them.
@@ -1445,28 +1492,12 @@ fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
         };
         let mut add = |s: &str, color| job.append(s, 0.0, TextFormat::simple(FONT, color));
         let parsed = notation::parse(seg);
-        let mut niss = vec![];
-        for t in &parsed.tokens {
-            if let TokenKind::Close {
-                kind: GroupKind::Niss,
-                open,
-                ..
-            } = t.kind
-            {
-                niss.push(open);
-            }
-        }
+        let colors = token_colors(seg, &parsed.tokens);
         let mut at = 0;
         for (i, t) in parsed.tokens.iter().enumerate() {
             add(&seg[at..t.span.start], DIM);
             let unclosed = parsed.open.iter().any(|g| g.span == t.span);
-            let color = if unclosed {
-                ERROR
-            } else if niss.contains(&t.span.start) && !t.kind.is_error() {
-                NISS
-            } else {
-                color_of(&parsed.tokens, i)
-            };
+            let color = if unclosed { ERROR } else { colors[i] };
             add(&seg[t.span.clone()], color);
             at = t.span.end;
         }

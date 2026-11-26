@@ -1144,3 +1144,24 @@ fn timeline_shows_the_selections_stm() {
     assert_eq!(shown(&h).as_deref(), Some("5 STM"));
     shot(&mut h, "stm");
 }
+
+#[test]
+fn light_mode() {
+    let mut h = harness("(R U)2 [R, U] [F: U'] ^(D L) [R\n");
+    shot(&mut h, "dark");
+    h.ctx.set_theme(egui::Theme::Light);
+    h.run_steps(3);
+    shot(&mut h, "light");
+    // The caret, in the text box and on the timeline, shows on the light
+    // background.
+    let dark = egui::Visuals::light().strong_text_color();
+    let carets = h
+        .output()
+        .shapes
+        .iter()
+        .filter(
+            |s| matches!(&s.shape, egui::Shape::LineSegment { stroke, .. } if stroke.color == dark),
+        )
+        .count();
+    assert_eq!(carets, 2);
+}
