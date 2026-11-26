@@ -374,10 +374,20 @@ impl Session {
         } else {
             self.at_offset(caret)
         };
-        self.place(spot);
-        if (self.caret, self.inside) != a {
-            self.anchor = Some(a);
+        self.select_spots(a, spot);
+    }
+    fn select_spots(&mut self, anchor: Spot, caret: Spot) {
+        self.place(caret);
+        if (self.caret, self.inside) != anchor {
+            self.anchor = Some(anchor);
         }
+    }
+    /// Selects all marks on a bubble's line, keeping its active branch.
+    pub fn select_bubble(&mut self, branch: SegId) {
+        let parent = self.doc.get(branch).parent.expect("bubbles have parents");
+        let start = self.spot_at_gap(parent, 0);
+        let end = self.spot_at_gap(parent, self.doc.get(parent).children.len());
+        self.select_spots(end, start);
     }
     /// Where a key that moved the text box's caret from `old` to `new` puts
     /// it instead: Up or Down (`vertical`) onto a bubble's line go to after
@@ -546,27 +556,95 @@ impl Session {
         let Pos { seg, off } = self.caret;
         let i = path.iter().position(|s| *s == seg).expect("caret on path");
         let tokens = notation::parse(&self.doc.get(seg).text).tokens;
-        let pos = if forward {
-            match tokens.iter().find(|t| t.span.end > off) {
-                Some(t) => Pos {
-                    seg,
-                    off: t.span.end,
-                },
-                None => path
-                    .get(i + 1)
-                    .map_or(self.caret, |&next| Pos { seg: next, off: 0 }),
-            }
+        let token = if forward {
+            tokens.iter().find(|t| t.span.end > off)
         } else {
-            match tokens.iter().rev().find(|t| t.span.start < off) {
-                Some(t) => Pos {
-                    seg,
-                    off: t.span.start,
-                },
-                None if i > 0 => self.doc.end(path[i - 1]),
-                None => Pos { seg, off: 0 },
+            tokens.iter().rev().find(|t| t.span.start < off)
+        };
+        if let Some(t) = token {
+            let start = Pos {
+                seg,
+                off: t.span.start,
+            };
+            let end = Pos {
+                seg,
+                off: t.span.end,
+            };
+            let (opposite, to) = if forward { (start, end) } else { (end, start) };
+            if extend && self.anchor.is_none() && t.span.start < off && off < t.span.end {
+                self.set_selection(opposite, to);
+            } else {
+                self.move_caret(to, extend);
             }
+            return;
+        }
+        let pos = if forward {
+            path.get(i + 1)
+                .map_or(self.caret, |&next| Pos { seg: next, off: 0 })
+        } else if i > 0 {
+            self.doc.end(path[i - 1])
+        } else {
+            Pos { seg, off: 0 }
         };
         self.move_caret(pos, extend);
+    }
+    /// Goes to the edge of the current text or bubble line. When already at
+    /// that edge, repeating the command includes the whole line in the selection.
+    pub fn step_line(&mut self, forward: bool, extend: bool) {
+        let caret = (self.caret, self.inside);
+        let bubble = self.bubble_of(caret).filter(|_| {
+            self.inside != Inside::No || self.anchor.is_none() || self.bubble_selection()
+        });
+        let (start, end, at_edge) = if let Some(parent) = bubble {
+            let n = self.doc.get(parent).children.len();
+            let gap = self.gap_of(caret);
+            (
+                self.spot_at_gap(parent, 0),
+                self.spot_at_gap(parent, n),
+                gap == if forward { n } else { 0 },
+            )
+        } else {
+            let Pos { seg, off } = self.caret;
+            let text = &self.doc.get(seg).text;
+            let start = text[..off].rfind('\n').map_or(0, |i| i + 1);
+            let end = text[off..].find('\n').map_or(text.len(), |i| off + i);
+            let spot = |off| (Pos { seg, off }, Inside::No);
+            (
+                spot(start),
+                spot(end),
+                off == if forward { end } else { start },
+            )
+        };
+        let (opposite, to) = if forward { (start, end) } else { (end, start) };
+        if let Some(anchor) = self.anchor {
+            let a = self.anchor_offset();
+            let lo = self.spot_offset(start).expect("line start on path");
+            let hi = self.spot_offset(end).expect("line end on path");
+            if a < lo || a > hi {
+                // Keep the anchor on the other line. At the edge, include
+                // this whole line by moving the caret away from the anchor.
+                let to = if !at_edge {
+                    to
+                } else if a < lo {
+                    end
+                } else {
+                    start
+                };
+                self.select_spots(anchor, to);
+                return;
+            }
+        }
+        if at_edge
+            && (extend
+                || self.anchor.is_none()
+                || self.spot_offset(opposite) == Some(self.anchor_offset()))
+        {
+            self.select_spots(opposite, to);
+        } else if extend {
+            self.select_spots(self.anchor_spot(), to);
+        } else {
+            self.place(to);
+        }
     }
     /// Like `step`, but past a whole run: the tokens up to a bracket,
     /// separator or line break.
@@ -1201,7 +1279,7 @@ impl Session {
     }
     /// The bubble that the selection is in, and the indices of its selected
     /// branches.
-    fn selected_branches(&self) -> Option<(SegId, Range<usize>)> {
+    pub fn selected_branches(&self) -> Option<(SegId, Range<usize>)> {
         if !self.bubble_selection() {
             return None;
         }

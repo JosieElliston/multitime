@@ -342,28 +342,32 @@ impl App {
                     !self.session.wrap(open, close)
                 });
             });
-            // Option moves and deletes by tokens, as egui would by words.
-            let keys = [
-                (Key::ArrowLeft, false),
-                (Key::ArrowRight, true),
-                (Key::Backspace, false),
-                (Key::Delete, true),
-            ];
-            for (k, forward) in keys {
-                let (pressed, shift) = ui.input(|i| {
-                    let m = i.modifiers;
-                    (m.alt && !m.command && !m.ctrl && i.key_pressed(k), m.shift)
+            ui.input_mut(|i| {
+                i.events.retain(|event| {
+                    let Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers: m,
+                        ..
+                    } = *event
+                    else {
+                        return true;
+                    };
+                    match key {
+                        Key::ArrowLeft | Key::ArrowRight if m.command && !m.ctrl && !m.alt => {
+                            self.session.step_line(key == Key::ArrowRight, m.shift);
+                        }
+                        Key::ArrowLeft | Key::ArrowRight if m.alt && !m.command && !m.ctrl => {
+                            self.session.step_word(key == Key::ArrowRight, m.shift);
+                        }
+                        Key::Backspace | Key::Delete if m.alt && !m.command && !m.ctrl => {
+                            self.session.delete(key == Key::Delete);
+                        }
+                        _ => return true,
+                    }
+                    false
                 });
-                if !pressed {
-                    continue;
-                }
-                ui.input_mut(|i| i.consume_key(Modifiers::ALT, k));
-                if matches!(k, Key::Backspace | Key::Delete) {
-                    self.session.delete(forward);
-                } else {
-                    self.session.step_word(forward, shift);
-                }
-            }
+            });
             return;
         };
         ui.input_mut(|input| {
@@ -627,7 +631,7 @@ impl App {
             (
                 p.primary_pressed(),
                 p.primary_down(),
-                p.any_released(),
+                p.button_released(egui::PointerButton::Primary),
                 i.modifiers.shift,
                 p.interact_pos(),
             )
@@ -649,7 +653,34 @@ impl App {
         } else {
             Unit::Run
         };
-        if pressed
+        let bubbles: Vec<_> = self
+            .session
+            .bubbles()
+            .into_iter()
+            .map(|b| {
+                let index = egui::text::CCursor::new(text[..b.line].chars().count());
+                let rect = out
+                    .galley
+                    .pos_from_cursor(index)
+                    .translate(out.galley_pos.to_vec2());
+                (b.seg, rect)
+            })
+            .collect();
+        // A mark has its own click response. Use the press on the bubble's
+        // row so the same gesture works on the marks and in the gaps.
+        let bubble_click = (!shift
+            && self.press.0 >= 2
+            && (down || released)
+            && out.response.interact_rect.contains(self.press.2))
+        .then(|| {
+            bubbles
+                .iter()
+                .find(|(_, rect)| rect.y_range().contains(self.press.2.y))
+                .map(|&(seg, _)| seg)
+        })
+        .flatten();
+        if bubble_click.is_none()
+            && pressed
             && !shift
             && self.press.0 >= 2
             && out.response.is_pointer_button_down_on()
@@ -663,7 +694,10 @@ impl App {
             });
         }
         let unit_drag = self.unit_drag.filter(|d| !d.timeline && (down || released));
-        if let Some(d) = unit_drag {
+        if let Some(seg) = bubble_click {
+            self.mode = Mode::Text;
+            self.session.select_bubble(seg);
+        } else if let Some(d) = unit_drag {
             if let Some(target) =
                 pointer.and_then(|p| self.session.unit_at_offset(char_at(p), d.unit))
             {
@@ -739,15 +773,10 @@ impl App {
         }
 
         let mut clicked = None;
-        for b in self.session.bubbles() {
-            let index = egui::text::CCursor::new(text[..b.line].chars().count());
-            let rect = out
-                .galley
-                .pos_from_cursor(index)
-                .translate(out.galley_pos.to_vec2());
-            self.bubble(ui, rect.left_center(), b.seg, &mut clicked, preview);
+        for (seg, rect) in bubbles {
+            self.bubble(ui, rect.left_center(), seg, &mut clicked, preview);
         }
-        if let Some(seg) = clicked {
+        if let Some(seg) = clicked.filter(|_| bubble_click.is_none()) {
             self.session.enter(seg);
         }
     }
@@ -919,13 +948,49 @@ impl App {
             let mut cells: Vec<(Pos2, Pos)> = vec![];
 
             // Selection, behind everything else.
+            let fill = ui.visuals().selection.bg_fill;
+            let paint_band = |from: Pos2, to: Pos2| {
+                let half = vec2(0.0, 7.0);
+                painter.rect_filled(Rect::from_min_max(from - half, to + half), 0.0, fill);
+            };
+            let paint_connector = |from, to| {
+                let vertical = Rect::from_two_pos(from, to);
+                painter.rect_filled(vertical.expand2(vec2(2.0, 0.0)), 0.0, fill);
+            };
             let index = |p: Pos| path.iter().position(|s| *s == p.seg).map(|i| (i, p.off));
-            if let Some(a) = index(self.session.anchor())
+            if let Some((parent, range)) = self.session.selected_branches() {
+                let p = &nodes[&parent];
+                let x = at(p, p.len).x;
+                let branches = &doc.get(parent).children[range];
+                let mut previous = None;
+                let mut pending = Vec::new();
+                for &seg in branches {
+                    let corner = pos2(x, at(&nodes[&seg], 0.0).y);
+                    if let Some(from) = previous {
+                        paint_connector(from, corner);
+                    }
+                    previous = Some(corner);
+                    pending.push((seg, corner));
+                }
+                while let Some((seg, corner)) = pending.pop() {
+                    let node = &nodes[&seg];
+                    let end = at(node, node.len);
+                    paint_band(corner, end);
+                    let mut from = end;
+                    for &child in &doc.get(seg).children {
+                        let corner = pos2(end.x, at(&nodes[&child], 0.0).y);
+                        if corner.y != from.y {
+                            paint_connector(from, corner);
+                        }
+                        from = corner;
+                        pending.push((child, corner));
+                    }
+                }
+            } else if let Some(a) = index(self.session.anchor())
                 && let Some(c) = index(caret)
                 && a != c
             {
                 let (a, b) = (a.min(c), a.max(c));
-                let fill = ui.visuals().selection.bg_fill;
                 for i in a.0..=b.0 {
                     let node = &nodes[&path[i]];
                     let text = &doc.get(path[i]).text;
@@ -935,17 +1000,14 @@ impl App {
                     } else {
                         node.len
                     };
-                    let half = vec2(0.0, 7.0);
-                    let band = Rect::from_min_max(at(node, x0) - half, at(node, x1) + half);
-                    painter.rect_filled(band, 0.0, fill);
+                    paint_band(at(node, x0), at(node, x1));
                     if i > a.0 {
                         // The fork's cell.
                         let p = &nodes[&path[i - 1]];
                         let (from, to) = (at(p, p.len), at(node, 0.0));
-                        let v = Rect::from_two_pos(from, pos2(from.x, to.y));
-                        let h = Rect::from_min_max(pos2(from.x, to.y - 7.0), to + half);
-                        painter.rect_filled(v.expand2(vec2(2.0, 0.0)), 0.0, fill);
-                        painter.rect_filled(h, 0.0, fill);
+                        let corner = pos2(from.x, to.y);
+                        paint_connector(from, corner);
+                        paint_band(corner, to);
                     }
                 }
             }

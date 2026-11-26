@@ -1,7 +1,7 @@
 //! Drives the real UI headlessly. Screenshots go to target/ui-*.png.
 
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, pos2};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{Harness, HarnessBuilder, kittest::Queryable};
 use multitime::{doc::Doc, session::Inside, ui::App};
 
 const FILE: &str = "R' U' F D2 L
@@ -20,14 +20,18 @@ const FILE: &str = "R' U' F D2 L
 ";
 
 fn harness(file: &str) -> Harness<'static, App> {
-    let app = App::new(Doc::from_file(file).unwrap(), "/dev/null".into());
-    let mut h = Harness::builder()
+    build_harness(file, harness_builder().wgpu())
+}
+fn harness_builder() -> HarnessBuilder<App> {
+    Harness::builder()
         .with_size(egui::vec2(1200.0, 800.0))
         .with_accessibility_check(false)
         // Fast enough for double clicks.
         .with_step_dt(1.0 / 60.0)
-        .wgpu()
-        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+}
+fn build_harness(file: &str, builder: HarnessBuilder<App>) -> Harness<'static, App> {
+    let app = App::new(Doc::from_file(file).unwrap(), "/dev/null".into());
+    let mut h = builder.build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);
     h
 }
@@ -777,6 +781,102 @@ fn selecting_text_by_units() {
     }
     shot(&mut h, "units");
     assert_eq!(file(&h), "R U' [F, D B] L\nB' D2 // cd\n");
+}
+
+#[test]
+fn selecting_tokens_and_lines_with_arrows() {
+    let mut h = build_harness(
+        "R U2' F\nB D2 L\n>\n  U\n>\n  D\n>\n  F\n",
+        harness_builder(),
+    );
+    let token = Modifiers::ALT | Modifiers::SHIFT;
+    for (arrow, extended) in [(Key::ArrowLeft, "R U2'"), (Key::ArrowRight, "U2' F")] {
+        clicks(&mut h, 1, pos2(50.0, 50.0), &[]);
+        key(&mut h, token, arrow);
+        assert_eq!(copied(&mut h), "U2'");
+        key(&mut h, token, arrow);
+        assert_eq!(copied(&mut h), extended);
+    }
+    for arrow in [Key::ArrowLeft, Key::ArrowRight] {
+        clicks(&mut h, 1, pos2(50.0, 67.0), &[]);
+        key(&mut h, Modifiers::COMMAND, arrow);
+        assert_eq!(copied(&mut h), "");
+        key(&mut h, Modifiers::COMMAND, arrow);
+        assert_eq!(copied(&mut h), "B D2 L");
+        key(&mut h, Modifiers::COMMAND, arrow);
+        assert_eq!(copied(&mut h), "B D2 L");
+
+        clicks(&mut h, 1, pos2(50.0, 84.0), &[]);
+        key(&mut h, Modifiers::COMMAND, arrow);
+        assert_eq!(copied(&mut h), "");
+        key(&mut h, Modifiers::COMMAND, arrow);
+        assert_eq!(copied(&mut h), ">\n  U\n>\n  D\n>\n  F\n");
+    }
+}
+
+#[test]
+fn selecting_a_whole_line_keeps_multiline_selections() {
+    let mut h = build_harness("R U\nF D\nL B\n>\n  B2 L\n>\n  D\n", harness_builder());
+    clicks(&mut h, 1, pos2(25.0, 50.0), &[]);
+    let branch = h.state().session.text().find("B2").unwrap();
+    for modifiers in [Modifiers::COMMAND, Modifiers::COMMAND | Modifiers::SHIFT] {
+        for arrow in [Key::ArrowLeft, Key::ArrowRight] {
+            for (anchor, caret, want) in [
+                (2, 5, "U\nF D"),
+                (9, 5, "F D\nL"),
+                (10, branch + 1, "B\n>\nB2 L"),
+            ] {
+                h.state_mut().session.select_offsets(anchor, caret, None);
+                key(&mut h, modifiers, arrow);
+                key(&mut h, modifiers, arrow);
+                assert_eq!(copied(&mut h), want, "{modifiers:?} {arrow:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn double_click_selects_only_the_bubble_line() {
+    let file = "R U\n>\n  D\n>\n  F\n>\n  L\n";
+    let mut h = build_harness(file, harness_builder());
+    // The first two marks and the gap between them.
+    for x in [30.0, 42.0, 50.0] {
+        clicks(&mut h, 2, pos2(x, 67.0), &[]);
+        assert_eq!(copied(&mut h), ">\n  D\n>\n  F\n>\n  L\n", "{x}");
+        assert_eq!(h.state().session.inside(), Inside::Start);
+    }
+    assert_eq!(h.state().session.doc().to_file(), file);
+}
+
+#[test]
+fn timeline_highlights_selected_branch_subtrees() {
+    let mut h = build_harness(
+        "R U\n>\n  D\n  >\n    U\n>\n  F\n  >\n    B\n  >\n    R\n    >\n      U'\n>\n  L\n",
+        harness_builder(),
+    );
+    let s = &mut h.state_mut().session;
+    let b = &s.bubbles()[0];
+    s.select_offsets(b.line + 1, b.line + 3, None);
+    h.run_steps(3);
+    let fill = egui::Visuals::dark().selection.bg_fill;
+    let selected = |x, y| {
+        h.output().shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(r) if r.fill == fill && r.rect.contains(pos2(x, y)))
+        })
+    };
+    assert!(!selected(42.0, 621.0)); // parent text
+    assert!(!selected(62.0, 621.0)); // first mark
+    assert!(!selected(102.0, 621.0)); // descendant of the first branch
+    assert!(!selected(59.0, 638.0)); // connector above selection
+    assert!(selected(62.0, 647.0)); // second mark
+    assert!(selected(78.0, 647.0)); // second branch text
+    assert!(selected(59.0, 664.0)); // selected connector
+    assert!(selected(83.0, 664.0)); // nested connector
+    assert!(selected(90.0, 673.0)); // nested mark
+    assert!(selected(102.0, 647.0)); // first child of the second branch
+    assert!(selected(102.0, 673.0)); // second child of the second branch
+    assert!(selected(126.0, 673.0)); // grandchild of the second branch
+    assert!(selected(62.0, 699.0)); // third mark
 }
 
 #[test]
