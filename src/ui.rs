@@ -3,7 +3,7 @@
 use crate::doc::{Doc, Pos, SegId};
 use crate::notation::{self, GroupKind, Inversion, TokenKind, Unit};
 use crate::puzzle::{self, Perm, STICKERS};
-use crate::session::{self, END, InversionMode, MARK, Session};
+use crate::session::{END, InversionMode, MARK, OPEN, Session};
 use eframe::egui::{
     self, Align2, Color32, Event, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke,
     TextFormat, Ui, pos2, vec2,
@@ -31,7 +31,7 @@ const GHOST_CARET: Stroke = Stroke {
 };
 const EDITOR: &str = "path editor";
 const FONT: FontId = FontId::monospace(15.0);
-/// Widths of a `MARK` and an `END` in the text box.
+/// Width of a `MARK` in the text box, and the room after a bubble's last one.
 const MARK_WIDTH: f32 = 18.0;
 const END_WIDTH: f32 = 8.0;
 
@@ -258,7 +258,7 @@ impl App {
     /// Everything that the panels draw from, besides the views' orientations.
     fn drawn(&self) -> impl PartialEq + use<> {
         let s = &self.session;
-        let pos = (s.tip(), s.caret(), s.anchor(), s.inside());
+        let pos = (s.tip(), s.caret(), s.anchor_offset(), s.inside());
         (s.doc().clone(), pos, self.mode, self.preview)
     }
 
@@ -268,9 +268,34 @@ impl App {
     }
 
     fn shortcuts(&mut self, ui: &mut Ui) {
+        // The session does the clipboard, in both modes, since the text box's
+        // text doesn't have the tree.
+        let mut copied = None;
+        ui.input_mut(|i| {
+            i.events.retain(|e| {
+                match e {
+                    Event::Copy => copied = self.session.copy().or(copied.take()),
+                    Event::Cut => copied = self.session.cut().or(copied.take()),
+                    Event::Paste(t) => self.session.paste(t),
+                    _ => return true,
+                }
+                false
+            })
+        });
+        if let Some(t) = copied {
+            ui.ctx().copy_text(t);
+        }
         let key = |m, k| ui.input_mut(|i| i.consume_key(m, k));
-        let (cmd, shift) = (Modifiers::COMMAND, Modifiers::SHIFT);
+        let (cmd, shift, alt) = (Modifiers::COMMAND, Modifiers::SHIFT, Modifiers::ALT);
         let s = &mut self.session;
+        // Shifted first: `consume_key` ignores extra shifts.
+        for (k, down) in [(Key::ArrowUp, false), (Key::ArrowDown, true)] {
+            if key(alt | shift, k) {
+                s.duplicate_lines(down);
+            } else if key(alt, k) {
+                s.move_lines(down);
+            }
+        }
         // Shifted first: `consume_key` ignores extra shifts.
         if key(cmd | shift, Key::Z) || key(cmd, Key::Y) {
             s.redo();
@@ -499,13 +524,7 @@ impl App {
 
         // The session owns the caret and selection.
         let caret_chars = text[..caret].chars().count();
-        let anchor = if self.session.anchor() == self.session.caret() {
-            caret
-        } else {
-            self.session
-                .offset_of(self.session.anchor())
-                .expect("on path")
-        };
+        let anchor = self.session.anchor_offset();
         let range = egui::text::CCursorRange {
             secondary: egui::text::CCursor::new(text[..anchor].chars().count()),
             ..egui::text::CCursorRange::one(egui::text::CCursor::new(caret_chars))
@@ -571,9 +590,9 @@ impl App {
             job.wrap.max_width = wrap;
             let mut galley = ui.fonts_mut(|f| f.layout_job(job));
             let chars = |off: usize| egui::text::CCursor::new(text[..off].chars().count());
-            let anchor = s.offset_of(s.anchor()).expect("on path");
-            let range = egui::text::CCursorRange::two(chars(anchor), chars(s.caret_offset()));
-            if s.anchor() != s.caret() {
+            let (anchor, caret) = (s.anchor_offset(), s.caret_offset());
+            let range = egui::text::CCursorRange::two(chars(anchor), chars(caret));
+            if anchor != caret {
                 egui::text_selection::visuals::paint_text_selection(
                     &mut galley,
                     ui.visuals(),
@@ -584,14 +603,6 @@ impl App {
             let pos = out.galley_pos - vec2(galley.rect.left(), 0.0);
             ui.painter().galley(pos, galley, Color32::PLACEHOLDER);
         };
-
-        ui.output_mut(|o| {
-            for c in &mut o.commands {
-                if let egui::OutputCommand::CopyText(s) = c {
-                    *s = session::to_clipboard(s);
-                }
-            }
-        });
 
         // `out.cursor_range` doesn't include this frame's clicks, but this does.
         let range = out.state.cursor.char_range();
@@ -604,16 +615,7 @@ impl App {
         };
         if out.response.changed() {
             let caret = range.map_or(text.len(), |r| byte(r.primary));
-            let clipboard = ui.input(|i| {
-                i.events
-                    .iter()
-                    .any(|e| matches!(e, Event::Cut | Event::Paste(_)))
-            });
-            if clipboard {
-                self.session.edit_once(&text, caret);
-            } else {
-                self.session.edit(&text, caret);
-            }
+            self.session.edit(&text, caret);
             ui.ctx().request_discard("edited");
             paint_text(ui, &self.session);
             return; // the rest of the layout is stale
@@ -678,44 +680,40 @@ impl App {
         {
             let mut new = byte(r.primary);
             let pointer = ui.input(|i| i.pointer.primary_down() || i.pointer.any_released());
-            let bubbles = self.session.bubbles();
-            // Selections don't end within bubbles, and Up and Down (which set
-            // `h_pos`) only go to either side or to the active branch, since
-            // anywhere else would switch branches.
-            let vertical = r.h_pos.is_some() && !pointer;
-            if !r.is_empty() || vertical {
-                for (b, seg) in bubbles {
+            // Up and Down (which set `h_pos`) onto a bubble's line go to its
+            // active branch's mark, since anywhere else would switch branches.
+            if r.h_pos.is_some() && !pointer {
+                for (b, seg) in self.session.bubbles() {
                     if b.start < new && new < b.end {
                         let sibs = self.session.doc().siblings(seg);
-                        let active =
-                            b.start + 1 + sibs.iter().position(|s| *s == seg).expect("sibling");
-                        new = if vertical {
-                            let stops = [b.start, active, b.end];
-                            stops
-                                .into_iter()
-                                .min_by_key(|s| s.abs_diff(new))
-                                .expect("nonempty")
-                        } else if if pointer {
-                            new - b.start > b.end - new
-                        } else {
-                            new > caret
-                        } {
-                            b.end
-                        } else {
-                            b.start
-                        };
-                        break;
+                        new = b.start + 2 + sibs.iter().position(|s| *s == seg).expect("sibling");
                     }
                 }
             }
-            let (pos, inside) = self.session.at_offset(new);
-            if !r.is_empty() {
-                let (anchor, _) = self.session.at_offset(byte(r.secondary));
-                self.session.set_selection(anchor, pos);
-            } else if inside {
-                self.session.enter(pos.seg);
+            let from = byte(r.secondary);
+            // A selection from outside of a bubble goes over all of it or none
+            // of it: to the nearer side for the pointer, and for keys, past it.
+            let outside = self
+                .session
+                .bubbles()
+                .into_iter()
+                .all(|(b, _)| !(b.start < from && from < b.end));
+            if !r.is_empty() && outside {
+                for (b, _) in self.session.bubbles() {
+                    if b.start < new && new < b.end {
+                        let past = if pointer {
+                            new - b.start > b.end - new
+                        } else {
+                            new > caret
+                        };
+                        new = if past { b.end } else { b.start };
+                    }
+                }
+            }
+            if r.is_empty() || new == from {
+                self.session.set_caret_offset(new);
             } else {
-                self.session.go_to(pos);
+                self.session.select_offsets(from, new);
             }
             ui.ctx().request_repaint();
             if self.session.text() != text {
@@ -764,15 +762,11 @@ impl App {
 
         let mut clicked = None;
         for (range, seg) in self.session.bubbles() {
-            let index = egui::text::CCursor::new(text[..range.start].chars().count());
-            // If the line wraps at the bubble, it's on the next row.
-            let mark = egui::text::CCursor {
-                prefer_next_row: true,
-                ..index
-            };
+            // The start of its line.
+            let index = egui::text::CCursor::new(text[..range.start + 1].chars().count());
             let rect = out
                 .galley
-                .pos_from_cursor(mark)
+                .pos_from_cursor(index)
                 .translate(out.galley_pos.to_vec2());
             self.bubble(ui, rect.left_center(), seg, &mut clicked, preview);
         }
@@ -1216,18 +1210,16 @@ fn hover_text(text: &str, off: usize) -> String {
     format!("{}|{}", &text[..off], &text[off..])
 }
 
-/// Colors the text of a path. Bubbles are just left room for; see `App::bubble`.
+/// Colors the text of a path. Bubbles are just left room for, each on a line
+/// of its own; see `App::bubble`.
 fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
     const SPACE: char = '\u{a0}'; // doesn't wrap
     let (space, row) = ui.fonts_mut(|f| (f.glyph_width(&FONT, SPACE), f.row_height(&FONT)));
     let mut job = egui::text::LayoutJob::default();
-    for seg in text.split_inclusive([MARK, END]) {
-        let (seg, bubble) = match seg.strip_suffix(MARK) {
-            Some(seg) => (seg, Some(MARK_WIDTH)),
-            None => match seg.strip_suffix(END) {
-                Some(seg) => (seg, Some(END_WIDTH)),
-                None => (seg, None),
-            },
+    for seg in text.split_inclusive([OPEN, MARK, END]) {
+        let (seg, special) = match seg.chars().next_back() {
+            Some(c @ (OPEN | MARK | END)) => (&seg[..seg.len() - 1], Some(c)),
+            _ => (seg, None),
         };
         let mut add = |s: &str, color| job.append(s, 0.0, TextFormat::simple(FONT, color));
         let parsed = notation::parse(seg);
@@ -1257,11 +1249,16 @@ fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
             at = t.span.end;
         }
         add(&seg[at..], DIM);
-        if let Some(width) = bubble {
-            let size = FONT.size * width / space;
-            let mut format = TextFormat::simple(FontId::monospace(size), DIM);
-            format.line_height = Some(row);
-            job.append(&SPACE.to_string(), 0.0, format);
+        match special {
+            // A bubble's line breaks.
+            Some(OPEN | END) => add("\n", DIM),
+            Some(_) => {
+                let size = FONT.size * MARK_WIDTH / space;
+                let mut format = TextFormat::simple(FontId::monospace(size), DIM);
+                format.line_height = Some(row);
+                job.append(&SPACE.to_string(), 0.0, format);
+            }
+            None => {}
         }
     }
     job

@@ -6,15 +6,12 @@ F' [R U: R' U']
 ]
 // aset tesa 
 >
-
   R U
+
 >
-   // aset
+  // aset
   R U U
-
   >
-
     R U U F' U
   >
-
     R U U R' F'

@@ -2,6 +2,7 @@
 //! Never touches a puzzle.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SegId(pub u32);
@@ -39,6 +40,12 @@ fn find_fork(text: &str) -> Option<usize> {
         line_start += line.len();
     }
     None
+}
+/// A span, grown to take in the whitespace on both sides of it.
+fn around_whitespace(text: &str, span: Range<usize>) -> Range<usize> {
+    let start = text[..span.start].trim_end().len();
+    let end = text.len() - text[span.end..].trim_start().len();
+    start..end
 }
 fn is_fork_line(line: &str) -> bool {
     line.trim() == ">"
@@ -83,21 +90,28 @@ impl Doc {
     pub fn set_text(&mut self, id: SegId, text: String) {
         self.get_mut(id).text = text;
     }
-    /// Splits segments on any `>` in their text. Returns each segment that was
-    /// split, the offset of the `>`, and the new segment.
-    pub fn normalize(&mut self) -> Vec<(SegId, usize, SegId)> {
+    /// Splits segments on any `>` in their text, which takes the place of the
+    /// whitespace around it. Returns each segment that was split, the span that
+    /// the fork took the place of, and the new segment.
+    pub fn normalize(&mut self) -> Vec<(SegId, Range<usize>, SegId)> {
         let mut out = vec![];
         let mut todo: Vec<SegId> = self.ids().collect();
         while let Some(id) = todo.pop() {
             let text = &self.get(id).text;
             if let Some(at) = find_fork(text) {
-                let (left, right) = (text[..at].to_owned(), text[at + 1..].to_owned());
-                let new = self.split_into(id, left, right);
-                out.push((id, at, new));
+                let span = around_whitespace(text, at..at + 1);
+                let new = self.split_around(id, span.clone());
+                out.push((id, span, new));
                 todo.push(new);
             }
         }
         out
+    }
+    /// Forks a segment at an offset, in place of the whitespace around it.
+    /// Returns the new segment, which has the text after it.
+    pub fn fork_at(&mut self, seg: SegId, off: usize) -> SegId {
+        let span = around_whitespace(&self.get(seg).text, off..off);
+        self.split_around(seg, span)
     }
     pub fn end(&self, seg: SegId) -> Pos {
         Pos {
@@ -152,7 +166,7 @@ impl Doc {
     }
 
     /// Splits a segment into what's before and after a span, which is dropped.
-    pub fn split_around(&mut self, seg: SegId, span: std::ops::Range<usize>) -> SegId {
+    pub fn split_around(&mut self, seg: SegId, span: Range<usize>) -> SegId {
         let text = &self.get(seg).text;
         let (left, right) = (text[..span.start].to_owned(), text[span.end..].to_owned());
         self.split_into(seg, left, right)
@@ -180,6 +194,23 @@ impl Doc {
         let children = &mut self.get_mut(parent).children;
         children.pop();
         children.insert(index, new);
+        new
+    }
+
+    /// Moves the child at one index among its siblings to another.
+    pub fn move_child(&mut self, parent: SegId, from: usize, to: usize) {
+        let children = &mut self.get_mut(parent).children;
+        let c = children.remove(from);
+        children.insert(to, c);
+    }
+    /// Copies a segment of `src`, and its descendants, to be a child at an
+    /// index. Returns the copy.
+    pub fn graft(&mut self, parent: SegId, index: usize, src: &Doc, from: SegId) -> SegId {
+        let new = self.insert_child(parent, index);
+        self.set_text(new, src.get(from).text.clone());
+        for (i, &c) in src.get(from).children.iter().enumerate() {
+            self.graft(new, i, src, c);
+        }
         new
     }
 
@@ -236,6 +267,16 @@ impl Doc {
             out.push_str(">\n");
             self.write(c, depth + 1, out);
         }
+    }
+
+    /// Serializes branches like a file does, each with its `>` line.
+    pub fn branches_to_file(&self, branches: &[SegId]) -> String {
+        let mut out = String::new();
+        for &b in branches {
+            out.push_str(">\n");
+            self.write(b, 1, &mut out);
+        }
+        out
     }
 
     pub fn from_file(s: &str) -> Result<Self, String> {

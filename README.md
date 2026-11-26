@@ -39,9 +39,9 @@ esc cycles between focus on the text box and the two puzzles.
 
 ## forks
 
-a **bubble** has a `>` for each child, with one active child.
+a **bubble** has a `>` for each child, with one active child. it's on a line of its own, and the line breaks around it aren't part of the text.
 
-the caret can go into a bubble, and whichever `>` it's right after becomes active. to pass a bubble without changing the active branch, hold option.
+the caret can go into a bubble, before its first `>` or after one of them, and whichever `>` it's right after becomes active. Up and Down onto a bubble's line go after the active `>`. to pass a bubble without changing the active branch, hold option.
 
 cmd+[ and cmd+], or clicking a `>`, also switch branches.
 
@@ -53,19 +53,31 @@ in both the text box and the timeline:
 - triple-click selects a run: the tokens up to the nearest bracket, separator, or line break, such as one side of a commutator, or a line and its comment. on a bracket or separator, it selects what's inside the group.
 - dragging after either extends by the same unit. a drag over a bracket takes in its whole group.
 
+a selection that starts in a bubble stays in it, and selects `>`s. any other selection takes in all of a bubble or none of it.
+
 ### making forks
 
-- outside a comment or bubble, type `>` to split the timeline.
+- outside a comment or bubble, type `>` to split the timeline. the fork takes the place of the whitespace around it.
 - inside a bubble, `>` adds an empty branch.
+- before a bubble's first `>`, anything else goes on a line of its own before the bubble.
 
 ### deleting forks
 
-- in a bubble, Backspace deletes a `>` and its branch. unless it's the only `>` in which case its text is kept.
-- right after a bubble, Backspace deletes the bubble's entire subtree.
+- in a bubble, Backspace deletes a `>` and its branch, unless it's the only `>`, in which case its text is kept.
+- Backspace at the start of the line after a bubble, or Delete at the end of the line before it, deletes the bubble like Cmd+J.
 
 ### copy/paste
 
-copying a bubble copies just its active `>`.
+- selected `>`s copy their branches whole, written as in a [file](#files). cutting all of a bubble's `>`s deletes all of its branches.
+- a selection across a bubble copies only its active branch, with the `>` on a line of its own.
+- pasted text that starts with a `>` is branches. they go in a bubble at the caret, where Cmd+Enter would put an empty one, and mid-text, the text after the caret is the first branch.
+- otherwise, pasted text goes in at the caret, and the text after the caret continues from its last fork.
+
+### moving lines
+
+Option+Up and Option+Down move the lines that the selection or caret is on, past the line above or below, which can be a bubble's. past a bubble, they go into or out of its active branch only, as the text box reads. on a bubble's line, they move the selected `>`s, or the one before the caret, among their siblings, and before the first `>`, they move the bubble's line.
+
+Shift+Option+Up and Shift+Option+Down duplicate the lines instead, or on a bubble's line, the `>`s and their branches, leaving the caret on the upper or lower copy.
 
 ## keys
 
@@ -76,7 +88,9 @@ These work in both modes:
 | Cmd+Z, Cmd+Shift+Z | undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | select all, copy, cut, paste |
 | Cmd+Enter | fork at the gap between tokens at or after the caret (so after a comment, not in it), in place of its spaces. right before a bubble, add a first branch to it instead; right after, a last one; inside one, an empty branch. |
-| Cmd+J | delete the bubble before the caret's segment, keeping the active branch, and put back a space, or a line break after a comment |
+| Cmd+J | delete the bubble before the caret's segment, keeping the active branch. its line goes, and the line break before it stays. |
+| Option+Up, Option+Down | move lines or branches (see [moving lines](#moving-lines)) |
+| Shift+Option+Up, Shift+Option+Down | duplicate lines or branches |
 | Cmd+[, Cmd+] | switch branches |
 | Cmd+S | save |
 
