@@ -14,7 +14,7 @@ cargo run [file]  # default: solve.txt
 there are four elements:
 
 - two **puzzle views** show the state at the caret.
-- the **timeline** shows the full tree: a dot for each token, and a tick for each line break that doesn't end a comment. in its bottom right is the selection's STM, with groups written out, rotations free, and no cancellations. with `>`s selected, it isn't shown.
+- the **timeline** shows the full tree: a dot for each token, and a tick for each line break that doesn't end a comment. in its bottom right is the STM of the selection, or without one, of the path up to the caret. groups count as written out, rotations are free, and nothing cancels. with `>`s selected, it isn't shown, since it could mean up to their bubble or all of their branches.
 - the **text box** shows the notation of one path down the tree.
 
 there's one caret and one selection, shared by the text box and the timeline.

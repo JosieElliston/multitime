@@ -1633,13 +1633,22 @@ impl Session {
         }
         Some(out)
     }
-    /// STM of the selected text, or `None` without a selection or with
-    /// `>`s selected.
-    pub fn selection_stm(&self) -> Option<u32> {
+    /// STM of the selected text, or without a selection, of the path up to
+    /// the caret. `None` with `>`s selected, since it could be up to their
+    /// parent or the sum of their branches.
+    pub fn stm(&self) -> Option<u32> {
         if self.selected_branches().is_some() {
             return None;
         }
-        self.copy().map(|t| notation::stm(&t))
+        if let Some(t) = self.copy() {
+            return Some(notation::stm(&t));
+        }
+        let Pos { seg, off } = self.caret;
+        let mut path = self.doc.path(seg);
+        path.pop();
+        let before = path.iter().map(|&s| self.doc.get(s).text.as_str());
+        let text: Vec<&str> = before.chain([&self.doc.get(seg).text[..off]]).collect();
+        Some(notation::stm(&text.join("\n")))
     }
     /// Copies and deletes the selection.
     pub fn cut(&mut self) -> Option<String> {

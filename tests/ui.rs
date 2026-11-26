@@ -1129,7 +1129,7 @@ fn tab_types_four_spaces_in_text_mode() {
 }
 
 #[test]
-fn timeline_shows_the_selections_stm() {
+fn timeline_shows_stm() {
     let mut h = harness("x R [U, F]\n");
     let shown = |h: &Harness<'_, App>| {
         h.output().shapes.iter().find_map(|s| match &s.shape {
@@ -1139,8 +1139,14 @@ fn timeline_shows_the_selections_stm() {
             _ => None,
         })
     };
-    assert_eq!(shown(&h), None);
+    // Up to the caret, without a selection.
+    key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(shown(&h).as_deref(), Some("3 STM"));
     key(&mut h, Modifiers::SHIFT, Key::Home);
+    assert_eq!(shown(&h).as_deref(), Some("3 STM"));
+    key(&mut h, Modifiers::NONE, Key::Home);
+    assert_eq!(shown(&h).as_deref(), Some("0 STM"));
+    key(&mut h, Modifiers::SHIFT, Key::End);
     assert_eq!(shown(&h).as_deref(), Some("5 STM"));
     shot(&mut h, "stm");
 }

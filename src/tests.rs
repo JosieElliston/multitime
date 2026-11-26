@@ -1943,7 +1943,21 @@ fn counting_stm() {
         assert_eq!(stm(text), want, "{text}");
     }
     let mut s = Session::new(Doc::from_file("R U\n>\n  F [R, U]2\n>\n  B\n").unwrap());
-    assert_eq!(s.selection_stm(), None);
+    // Without a selection, up to the caret, which is at the end.
+    assert_eq!(s.stm(), Some(11));
+    // Before the multiplier, one pass.
+    s.step(false, false);
+    assert_eq!(s.stm(), Some(7));
+    // Partway into a group, what's played so far.
+    s.step(false, false);
+    assert_eq!(s.stm(), Some(5));
+    s.step_all(true, false);
     s.step_all(false, true);
-    assert_eq!(s.selection_stm(), Some(11));
+    assert_eq!(s.stm(), Some(11));
+    s.step(true, true);
+    assert_eq!(s.stm(), Some(10));
+    // With `>`s selected, nothing.
+    let b = &s.bubbles()[0];
+    s.select_offsets(b.line, b.line + 2, None);
+    assert_eq!(s.stm(), None);
 }

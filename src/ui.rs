@@ -1389,7 +1389,7 @@ impl App {
             r.on_hover_text_at_pointer(egui::RichText::new(hover_text(text, pos.off)).monospace());
             None
         });
-        if let Some(n) = self.session.selection_stm() {
+        if let Some(n) = self.session.stm() {
             let painter = ui.painter();
             let color = ui.visuals().text_color();
             let galley = painter.layout_no_wrap(format!("{n} STM"), FONT, color);
