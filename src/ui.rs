@@ -1224,8 +1224,13 @@ impl App {
 
             for (&seg, node) in &nodes {
                 let on_path = path.contains(&seg);
-                let color = if on_path { pal.accent } else { pal.dim };
-                let line = Stroke::new(if on_path { 2.0 } else { 1.0 }, color.gamma_multiply(0.6));
+                // Neutral, so as not to clash with the tokens' colors.
+                let (color, line) = if on_path {
+                    let v = ui.visuals();
+                    (v.strong_text_color(), Stroke::new(2.0, v.text_color()))
+                } else {
+                    (pal.dim, Stroke::new(1.0, pal.dim.gamma_multiply(0.6)))
+                };
                 let (start, end) = (at(node, 0.0), at(node, node.len));
                 painter.line_segment([start, end], line);
                 let s = doc.get(seg);
