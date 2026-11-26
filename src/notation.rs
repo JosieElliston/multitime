@@ -599,6 +599,13 @@ struct Group {
     inner: Range<usize>,
 }
 
+impl Group {
+    /// The end of its closing bracket, before any multiplier.
+    fn brackets_end(&self) -> usize {
+        (self.inner.end + 1).min(self.outer.end)
+    }
+}
+
 fn groups(text: &str, tokens: &[Token]) -> Vec<Group> {
     let mut out = vec![];
     let mut stack: Vec<Group> = vec![];
@@ -650,7 +657,9 @@ pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
     let groups = groups(text, &tokens);
     if let Some(g) = groups.iter().find(|g| g.members.contains(&index)) {
         return Some(match unit {
-            Unit::Token => g.outer.clone(),
+            // On the multiplier, that too.
+            Unit::Token if off >= g.brackets_end() && g.outer.contains(&off) => g.outer.clone(),
+            Unit::Token => g.outer.start..g.brackets_end(),
             Unit::Run => {
                 // Just the tokens, without the whitespace inside the brackets.
                 let inside: Vec<_> = tokens
@@ -758,10 +767,364 @@ pub fn close_groups(text: &str, mut r: Range<usize>) -> Range<usize> {
         let grow = groups.iter().find(|g| {
             let overlaps = r.start < g.outer.end && g.outer.start < r.end;
             let inside = g.inner.start <= r.start && r.end <= g.inner.end;
-            let covers = r.start <= g.outer.start && g.outer.end <= r.end;
+            let covers = r.start <= g.outer.start && g.brackets_end() <= r.end;
             overlaps && !inside && !covers
         });
         let Some(g) = grow else { return r };
         r = r.start.min(g.outer.start)..r.end.max(g.outer.end);
     }
+}
+
+/// A token or bracketed group, as `invert` and `expand` see notation.
+#[derive(Debug, Clone)]
+enum Node {
+    Move(String),
+    Pause,
+    Comment(String),
+    Newline,
+    Group {
+        /// Its opening bracket, such as `^(`.
+        open: String,
+        lhs: Vec<Node>,
+        /// For `[A, B]` and `[A: B]`, the separator and `B`.
+        rhs: Option<(char, Vec<Node>)>,
+        /// Its closing bracket and multiplier.
+        close: String,
+    },
+}
+
+/// The tokens in a range as a tree, or `None` if any bracket or separator
+/// belongs to a group that isn't all in it, if the range cuts a token, or if
+/// there's a token that isn't a move or a group.
+fn tree(text: &str, range: Range<usize>) -> Option<Vec<Node>> {
+    let tokens = parse(text).tokens;
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| t.span.end > range.start && t.span.start < range.end)
+        .collect();
+    if tokens
+        .iter()
+        .any(|t| t.span.start < range.start || t.span.end > range.end)
+    {
+        return None;
+    }
+    let mut i = 0;
+    let mut at = tokens.first().map_or(range.start, |t| t.span.start);
+    let out = seq(text, &tokens, &mut i, &mut at)?;
+    (i == tokens.len()).then_some(out)
+}
+
+/// The nodes up to a separator, a closing bracket, or the end.
+fn seq(text: &str, tokens: &[Token], i: &mut usize, at: &mut usize) -> Option<Vec<Node>> {
+    let mut out = vec![];
+    while let Some(t) = tokens.get(*i) {
+        let s = &text[t.span.clone()];
+        let newlines = text[*at..t.span.start].matches('\n').count();
+        out.extend(std::iter::repeat_n(Node::Newline, newlines));
+        *at = t.span.start;
+        if t.kind == TokenKind::Sep || s.starts_with([')', ']']) {
+            break;
+        }
+        *i += 1;
+        *at = t.span.end;
+        out.push(match t.kind {
+            TokenKind::Move => Node::Move(s.to_owned()),
+            TokenKind::Pause => Node::Pause,
+            TokenKind::Comment => Node::Comment(s.to_owned()),
+            // An opener, or a nested NISS one, which is an error.
+            TokenKind::Open | TokenKind::Error if opener(s).is_some() => {
+                let lhs = seq(text, tokens, i, at)?;
+                let mut next = tokens.get(*i)?;
+                let rhs = if next.kind == TokenKind::Sep {
+                    let sep = text[next.span.clone()].chars().next()?;
+                    *i += 1;
+                    *at = next.span.end;
+                    let rhs = seq(text, tokens, i, at)?;
+                    next = tokens.get(*i)?;
+                    Some((sep, rhs))
+                } else {
+                    None
+                };
+                if !matches!(next.kind, TokenKind::Close { .. }) {
+                    return None;
+                }
+                *i += 1;
+                *at = next.span.end;
+                Node::Group {
+                    open: s.to_owned(),
+                    lhs,
+                    rhs,
+                    close: text[next.span.clone()].to_owned(),
+                }
+            }
+            _ => return None,
+        });
+    }
+    Some(out)
+}
+
+/// Writes nodes out, a space between tokens, and a line break after a comment.
+fn render(nodes: &[Node], out: &mut String) {
+    let push = |out: &mut String, s: &str| {
+        // Only a comment has a `//`, and it runs to the end of the line.
+        if out.rsplit('\n').next().is_some_and(|l| l.contains("//")) {
+            out.push('\n');
+        } else {
+            out.push_str(padding(out, s));
+        }
+        out.push_str(s);
+    };
+    for n in nodes {
+        match n {
+            Node::Move(s) | Node::Comment(s) => push(out, s),
+            Node::Pause => push(out, "."),
+            Node::Newline => {
+                out.truncate(out.trim_end_matches(' ').len());
+                out.push('\n');
+            }
+            Node::Group {
+                open,
+                lhs,
+                rhs,
+                close,
+            } => {
+                push(out, open);
+                render(lhs, out);
+                if let Some((sep, rhs)) = rhs {
+                    push(out, &sep.to_string());
+                    render(rhs, out);
+                }
+                push(out, close);
+            }
+        }
+    }
+}
+
+/// Undoes a move: toggles its prime.
+fn invert_move(s: &str) -> String {
+    match s.strip_suffix('\'') {
+        Some(s) => s.to_owned(),
+        None => format!("{s}'"),
+    }
+}
+
+/// Nodes that undo `nodes`. Lines go in reverse order, each keeping its
+/// comment at its end.
+fn invert_nodes(nodes: &[Node]) -> Vec<Node> {
+    let mut out = vec![];
+    for (k, line) in nodes.rsplit(|n| matches!(n, Node::Newline)).enumerate() {
+        if k > 0 {
+            out.push(Node::Newline);
+        }
+        let (comment, moves) = match line.split_last() {
+            Some((c @ Node::Comment(_), rest)) => (Some(c.clone()), rest),
+            _ => (None, line),
+        };
+        out.extend(moves.iter().rev().map(invert_node));
+        out.extend(comment);
+    }
+    out
+}
+fn invert_node(n: &Node) -> Node {
+    match n {
+        Node::Move(s) => Node::Move(invert_move(s)),
+        Node::Group {
+            open,
+            lhs,
+            rhs,
+            close,
+        } => {
+            // [A, B]' = [B, A], [A: B]' = [A: B'], and (A)n' = (A')n.
+            let (lhs, rhs) = match rhs {
+                Some((',', b)) => (b.clone(), Some((',', lhs.clone()))),
+                Some((sep, b)) => (lhs.clone(), Some((*sep, invert_nodes(b)))),
+                None => (invert_nodes(lhs), None),
+            };
+            Node::Group {
+                open: open.clone(),
+                lhs,
+                rhs,
+                close: close.clone(),
+            }
+        }
+        n => n.clone(),
+    }
+}
+
+/// Writes out every commutator and conjugate in `nodes`, and returns whether
+/// there were any. Their multipliers too if `repeat`, and nested ones' always.
+fn expand_nodes(nodes: Vec<Node>, repeat: bool) -> (Vec<Node>, bool) {
+    let mut out = vec![];
+    let mut any = false;
+    for n in nodes {
+        let Node::Group {
+            open,
+            lhs,
+            rhs,
+            close,
+        } = n
+        else {
+            out.push(n);
+            continue;
+        };
+        let (lhs, inner) = expand_nodes(lhs, true);
+        let Some((sep, rhs)) = rhs else {
+            any |= inner;
+            out.push(Node::Group {
+                open,
+                lhs,
+                rhs: None,
+                close,
+            });
+            continue;
+        };
+        any = true;
+        let (rhs, _) = expand_nodes(rhs, true);
+        let trim = |v: Vec<Node>| {
+            let is_line = |n: &Node| matches!(n, Node::Newline);
+            let start = v.iter().position(|n| !is_line(n)).unwrap_or(v.len());
+            let end = v.iter().rposition(|n| !is_line(n)).map_or(start, |i| i + 1);
+            v[start..end].to_vec()
+        };
+        let mut body = trim(lhs.clone());
+        body.extend(trim(rhs.clone()));
+        body.extend(trim(invert_nodes(&lhs)));
+        if sep == ',' {
+            body.extend(trim(invert_nodes(&rhs)));
+        }
+        let mult = &close[1..];
+        if mult.is_empty() {
+            out.extend(body);
+        } else if repeat {
+            let n = parse_multiplier(mult).expect("closed groups have multipliers");
+            let body = if n < 0 { invert_nodes(&body) } else { body };
+            for _ in 0..n.unsigned_abs() {
+                out.extend(body.iter().cloned());
+            }
+        } else {
+            out.push(Node::Group {
+                open: "(".to_owned(),
+                lhs: body,
+                rhs: None,
+                close: format!("){mult}"),
+            });
+        }
+    }
+    (out, any)
+}
+
+/// Puts `nodes` in place of a span, with whatever spaces or line break that
+/// keeps them separate from what's around them. Returns the new text and
+/// where they went.
+fn replace_nodes(text: &str, span: Range<usize>, nodes: &[Node]) -> (String, Range<usize>) {
+    let mut new = String::new();
+    render(nodes, &mut new);
+    let (before, after) = (&text[..span.start], &text[span.end..]);
+    let left = padding(before, &new);
+    let right = if parse(&new).in_comment && !after.is_empty() && !after.starts_with('\n') {
+        "\n"
+    } else {
+        padding(&new, after)
+    };
+    let start = span.start + left.len();
+    let range = start..start + new.len();
+    (format!("{before}{left}{new}{right}{after}"), range)
+}
+
+/// Replaces the tokens in a range with ones that undo them: the lines in
+/// reverse order, each keeping its comment, and their moves in reverse order
+/// with their primes toggled. Returns the new text and the new range, or
+/// `None` if there are no tokens or a group isn't all in the range.
+pub fn invert(text: &str, range: Range<usize>) -> Option<(String, Range<usize>)> {
+    let tokens = parse(text).tokens;
+    // Inverting `X` in `Xn` is the same as inverting `Xn`, so a range up to a
+    // multiplier takes it in.
+    let end = range.end;
+    let range = match tokens
+        .iter()
+        .find(|t| t.span.start < end && end < t.span.end)
+    {
+        Some(t) if matches!(t.kind, TokenKind::Close { .. }) && t.span.start + 1 == end => {
+            range.start..t.span.end
+        }
+        _ => range,
+    };
+    let nodes = tree(text, range.clone())?;
+    let inside: Vec<_> = tokens
+        .iter()
+        .filter(|t| range.start <= t.span.start && t.span.end <= range.end)
+        .collect();
+    let span = inside.first()?.span.start..inside.last()?.span.end;
+    let (new, at) = replace_nodes(text, span.clone(), &invert_nodes(&nodes));
+    Some((new, range.start..end + at.end - span.end))
+}
+
+/// Writes out each commutator and conjugate whose brackets are in a range:
+/// `[A, B]` as `A B A' B'` and `[A: B]` as `A B A'`. A multiplier in the
+/// range is written out too, by repeating it; one that isn't stays, on
+/// parentheses. Returns the new text and the new range, or `None` if there
+/// aren't any.
+pub fn expand(text: &str, range: Range<usize>) -> Option<(String, Range<usize>)> {
+    let tokens = parse(text).tokens;
+    let groups = groups(text, &tokens);
+    let within = |g: &&Group| range.start <= g.outer.start && g.brackets_end() <= range.end;
+    let mut outer: Vec<Range<usize>> = groups
+        .iter()
+        .filter(within)
+        .filter(|g| {
+            !groups.iter().filter(within).any(|h| {
+                h.outer != g.outer && h.outer.start <= g.outer.start && g.outer.end <= h.outer.end
+            })
+        })
+        .map(|g| g.outer.clone())
+        .collect();
+    // From the end, so that the earlier spans still hold.
+    outer.sort_by_key(|r| std::cmp::Reverse(r.start));
+    let mut text = text.to_owned();
+    let mut end = range.end;
+    let mut any = false;
+    for span in outer {
+        let Some(nodes) = tree(&text, span.clone()) else {
+            continue;
+        };
+        let (nodes, expanded) = expand_nodes(nodes, span.end <= range.end);
+        if !expanded {
+            continue;
+        }
+        let (new, _) = replace_nodes(&text, span, &nodes);
+        end = end + new.len() - text.len();
+        text = new;
+        any = true;
+    }
+    any.then_some((text, range.start..end))
+}
+
+/// Where a separator goes in a range, nearest `off`: right after a token, or
+/// at either end, but not in a group that isn't all in it or in a comment.
+pub fn separator_offset(text: &str, range: Range<usize>, off: usize) -> usize {
+    let p = parse(text);
+    let groups = groups(text, &p.tokens);
+    let ok = |c: usize| {
+        let split = groups.iter().any(|g| {
+            let around = g.outer.start <= range.start && range.end <= g.outer.end;
+            g.outer.start < c && c < g.outer.end && !around
+        });
+        !split && !parse(&text[..c]).in_comment
+    };
+    let ends = p.tokens.iter().map(|t| t.span.end);
+    let candidates = [range.start, range.end]
+        .into_iter()
+        .chain(ends.filter(|e| range.contains(e)))
+        .filter(|c| ok(*c));
+    candidates
+        .min_by_key(|c| c.abs_diff(off))
+        .unwrap_or(range.start)
+}
+
+/// Inserts a separator at `at`, with a space after it where one is needed.
+/// Returns the new text and how much longer it is.
+pub fn insert_separator(text: &str, at: usize, sep: char) -> (String, usize) {
+    let (new, _) = insert_padded(text, at, &sep.to_string());
+    let n = new.len() - text.len();
+    (new, n)
 }

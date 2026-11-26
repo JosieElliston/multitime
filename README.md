@@ -51,11 +51,23 @@ cmd+[ and cmd+], or clicking a `>`, also switch branches.
 
 in both the text box and the timeline:
 
-- double-click selects a token. on a bracket or separator, it selects the whole group. in a comment, it selects a word.
+- double-click selects a token. on a bracket or separator, it selects the whole group. in the text box, that's without its multiplier, unless the click is on the multiplier; the timeline goes by tokens, so there it's always with it. in a comment, it selects a word.
 - triple-click selects a run: the tokens up to the nearest bracket, separator, or line break, such as one side of a commutator, or a line and its comment. on a bracket or separator, it selects what's inside the group.
 - dragging after either extends by the same unit. a drag over a bracket takes in its whole group.
 
 a selection that starts in a bubble stays in it, and selects `>`s. any other selection takes in all of a bubble or none of it.
+
+### context menu
+
+right-click in the text box or on the timeline. in the selection, it has cut, copy and paste, and these FMC tools for a selection of text:
+
+- **group** wraps the selection in `( )`.
+- **commutator** and **conjugate** wrap the selection in `[ ]`, with the `,` or `:` at the gap nearest the click, but not inside a group that the selection doesn't have all of.
+- **NISS** wraps it in `^( )`.
+- **expand** writes out each commutator and conjugate whose brackets are in the selection: `[A, B]` as `A B A' B'` and `[A: B]` as `A B A'`. a multiplier in the selection is written out too, so `[A: B]2` is `A B A' A B A'`, and one that isn't stays, as `(A B A')2`.
+- **invert** replaces the selection with moves that undo it: lines in reverse order, each keeping its comment, and their moves reversed with their primes toggled. it needs a selection in one segment that cuts no group.
+
+the first four work across forks, since they're just brackets. elsewhere, a right click moves the caret there, and the menu only pastes.
 
 ### making forks
 

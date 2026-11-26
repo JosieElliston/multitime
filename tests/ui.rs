@@ -897,6 +897,13 @@ fn selecting_timeline_by_units() {
         assert_eq!(copied(&mut h), want, "{n} at {pos:?} through {path:?}");
     }
     assert_eq!(file(&h), "R U [F, D] B\n>\n  L\n");
+    // The timeline goes by tokens, so a group takes in its multiplier, unlike
+    // in the text box.
+    let mut h = harness("R [F, D]2'");
+    for i in [1.0, 3.0, 5.0] {
+        clicks(&mut h, 2, pos2(x(i), y), &[]);
+        assert_eq!(copied(&mut h), "[F, D]2'", "{i}");
+    }
 }
 
 #[test]
@@ -976,4 +983,74 @@ fn text_mode_deletes_by_tokens() {
     assert_eq!(file(&h), "R\n");
     key(&mut h, Modifiers::COMMAND, Key::Z);
     assert_eq!(file(&h), "R U2'\n");
+}
+
+fn menu_item(h: &mut Harness<'_, App>, label: &str) {
+    h.get_by_label(label).click();
+    h.run_steps(3);
+}
+
+#[test]
+fn context_menu_fmc_tools() {
+    use multitime::doc::Pos;
+    let mut h = harness("F R U D");
+    let root = h.state().session.doc().root();
+    let at = |off| Pos { seg: root, off };
+    let select = |h: &mut Harness<'_, App>, a, b| {
+        h.state_mut().session.set_selection(at(a), at(b));
+        h.run_steps(2);
+    };
+    // In the text box, the separator goes where the click was.
+    select(&mut h, 2, 7);
+    click(&mut h, pos2(67.0, 50.0), PointerButton::Secondary);
+    shot(&mut h, "context-menu");
+    menu_item(&mut h, "Commutator");
+    assert_eq!(file(&h), "F [R U, D]\n");
+    // Expand and invert keep the selection.
+    select(&mut h, 2, 10);
+    click(&mut h, pos2(67.0, 50.0), PointerButton::Secondary);
+    menu_item(&mut h, "Expand");
+    assert_eq!(file(&h), "F R U D U' R' D'\n");
+    click(&mut h, pos2(67.0, 50.0), PointerButton::Secondary);
+    menu_item(&mut h, "Invert");
+    assert_eq!(file(&h), "F D R U D' U' R'\n");
+    click(&mut h, pos2(67.0, 50.0), PointerButton::Secondary);
+    menu_item(&mut h, "NISS");
+    assert_eq!(file(&h), "F ^(D R U D' U' R')\n");
+    // On the timeline too, where the gaps around R U are at 48, 60 and 72.
+    h.state_mut().session.replace(Doc::new("F R U D"));
+    select(&mut h, 2, 7);
+    click(&mut h, pos2(72.0, 625.0), PointerButton::Secondary);
+    menu_item(&mut h, "Conjugate");
+    assert_eq!(file(&h), "F [R U: D]\n");
+    // Outside the selection, a right click moves the caret, and the menu
+    // only pastes.
+    click(&mut h, pos2(22.0, 50.0), PointerButton::Secondary);
+    assert_eq!(h.state().session.caret(), at(0));
+    assert!(h.query_by_label("Commutator").is_none());
+    assert!(h.query_by_label_contains("Paste").is_some());
+}
+
+#[test]
+fn expanding_with_or_without_the_multiplier() {
+    // Characters are 9 wide, from 23.
+    let x = |i: f32| 27.5 + 9.0 * i;
+    // A double click on a bracket leaves out the multiplier, so it stays.
+    let mut h = harness("F [R, U]2");
+    clicks(&mut h, 2, pos2(x(2.0), 50.0), &[]);
+    assert_eq!(copied(&mut h), "[R, U]");
+    click(&mut h, pos2(x(4.0), 50.0), PointerButton::Secondary);
+    menu_item(&mut h, "Expand");
+    assert_eq!(file(&h), "F (R U R' U')2\n");
+    // Dragging onto the multiplier takes it in, and it's written out.
+    let mut h = harness("F [R, U]2");
+    clicks(&mut h, 2, pos2(x(2.0), 50.0), &[pos2(x(8.0), 50.0)]);
+    assert_eq!(copied(&mut h), "[R, U]2");
+    click(&mut h, pos2(x(4.0), 50.0), PointerButton::Secondary);
+    menu_item(&mut h, "Expand");
+    assert_eq!(file(&h), "F R U R' U' R U R' U'\n");
+    // Group wraps the selection in parentheses.
+    click(&mut h, pos2(x(4.0), 50.0), PointerButton::Secondary);
+    menu_item(&mut h, "Group");
+    assert_eq!(file(&h), "F (R U R' U' R U R' U')\n");
 }

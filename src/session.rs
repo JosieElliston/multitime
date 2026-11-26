@@ -414,6 +414,18 @@ impl Session {
             },
         ))
     }
+    /// The same for the timeline's cell for the token at `pos`. The timeline
+    /// goes by tokens, so a unit there ends after a whole token: a group's
+    /// takes in its multiplier.
+    pub fn unit_on_timeline(&self, pos: Pos, unit: Unit) -> Option<(Pos, Pos)> {
+        let (start, mut end) = self.unit_at(pos, unit)?;
+        let text = &self.doc.get(end.seg).text;
+        let (gap, partway) = notation::gap(text, end.off);
+        if partway {
+            end.off = notation::parse(text).tokens[gap].span.end;
+        }
+        Some((start, end))
+    }
     /// The same for the character at an offset in the text box. A bubble's
     /// unit is the bubble, keeping its active branch.
     pub fn unit_at_offset(&self, off: usize, unit: Unit) -> Option<(Pos, Pos)> {
@@ -1056,34 +1068,169 @@ impl Session {
     /// Puts brackets around the selection, leaving what was selected selected.
     /// Returns false, doing nothing, if there's no selection of text.
     pub fn wrap(&mut self, open: &str, close: &str) -> bool {
-        let Some((anchor, Inside::No)) = self.anchor.filter(|_| !self.bubble_selection()) else {
+        self.wrap_with(open, None, close)
+    }
+    /// Wraps the selection in `[ ]` for a commutator or conjugate, with its
+    /// separator at the gap between tokens nearest `at`, but not in a group
+    /// that the selection cuts. Returns false, doing nothing, if there's no
+    /// selection of text.
+    pub fn wrap_binary(&mut self, sep: char, at: Pos) -> bool {
+        self.wrap_with("[", Some((sep, at)), "]")
+    }
+    fn wrap_with(&mut self, open: &str, sep: Option<(char, Pos)>, close: &str) -> bool {
+        let Some((mut lo, mut hi, backward)) = self.text_selection() else {
             return false;
         };
         let before = self.snapshot();
-        let caret = self.caret;
-        let backward = self.caret_offset() < self.anchor_offset();
-        let (mut lo, mut hi) = if backward {
-            (caret, anchor)
-        } else {
-            (anchor, caret)
-        };
-        // The end first, so that the start's offset still holds.
-        for (pos, c) in [(hi, close), (lo, open)] {
-            let mut text = self.doc.get(pos.seg).text.clone();
-            text.insert_str(pos.off, c);
+        let sep = sep.map(|(c, at)| (c, self.separator_pos(at)));
+        // From the end, so that earlier offsets still hold.
+        self.insert_at(hi, close);
+        if let Some((c, pos)) = sep {
+            let (text, n) = notation::insert_separator(&self.doc.get(pos.seg).text, pos.off, c);
             self.doc.set_text(pos.seg, text);
+            if pos.seg == hi.seg {
+                hi.off += n;
+            }
         }
+        self.insert_at(lo, open);
         lo.off += open.len();
         if hi.seg == lo.seg {
             hi.off += open.len();
         }
         self.record(before);
+        self.reselect(lo, hi, backward);
+        true
+    }
+    fn insert_at(&mut self, pos: Pos, s: &str) {
+        let mut text = self.doc.get(pos.seg).text.clone();
+        text.insert_str(pos.off, s);
+        self.doc.set_text(pos.seg, text);
+    }
+    /// Selects from `lo` to `hi`, with the caret at `lo` if `backward`.
+    fn reselect(&mut self, lo: Pos, hi: Pos, backward: bool) {
         if backward {
             self.set_selection(hi, lo);
         } else {
             self.set_selection(lo, hi);
         }
-        true
+    }
+    /// The selection, if it's of text rather than `>`s: its start, its end, and
+    /// whether the caret is at the start.
+    fn text_selection(&self) -> Option<(Pos, Pos, bool)> {
+        let Some((anchor, Inside::No)) = self.anchor.filter(|_| !self.bubble_selection()) else {
+            return None;
+        };
+        let backward = self.caret_offset() < self.anchor_offset();
+        Some(if backward {
+            (self.caret, anchor, true)
+        } else {
+            (anchor, self.caret, false)
+        })
+    }
+    /// The part of each segment that the selection of text has in it, in order.
+    fn selected_ranges(&self) -> Vec<(SegId, Range<usize>)> {
+        let Some((lo, hi, _)) = self.text_selection() else {
+            return vec![];
+        };
+        let path = self.doc.path(self.tip);
+        let index = |seg| path.iter().position(|s| *s == seg).expect("on path");
+        path[index(lo.seg)..=index(hi.seg)]
+            .iter()
+            .map(|&seg| {
+                let start = if seg == lo.seg { lo.off } else { 0 };
+                let end = if seg == hi.seg {
+                    hi.off
+                } else {
+                    self.doc.get(seg).text.len()
+                };
+                (seg, start..end)
+            })
+            .collect()
+    }
+    /// Where a separator goes in the selection for a position: the nearest
+    /// place in it that `notation::separator_offset` allows.
+    fn separator_pos(&self, at: Pos) -> Pos {
+        let ranges = self.selected_ranges();
+        let (seg, range) = match ranges.iter().find(|(s, _)| *s == at.seg) {
+            Some(r) => r.clone(),
+            // Off the selection: whichever end is nearer along the path.
+            None => {
+                let path = self.doc.path(self.tip);
+                let index = |seg| path.iter().position(|s| *s == seg);
+                let (first, last) = (&ranges[0], &ranges[ranges.len() - 1]);
+                return match index(at.seg) {
+                    Some(i) if Some(i) > index(last.0) => Pos {
+                        seg: last.0,
+                        off: last.1.end,
+                    },
+                    _ => Pos {
+                        seg: first.0,
+                        off: first.1.start,
+                    },
+                };
+            }
+        };
+        let text = &self.doc.get(seg).text;
+        let off =
+            notation::separator_offset(text, range.clone(), at.off.clamp(range.start, range.end));
+        Pos { seg, off }
+    }
+    /// Whether there's a selection of text, rather than of `>`s.
+    pub fn selects_text(&self) -> bool {
+        self.text_selection().is_some()
+    }
+    /// Whether an offset in the text is in the selection, or at either end.
+    pub fn selection_contains(&self, off: usize) -> bool {
+        let (a, c) = (self.anchor_offset(), self.caret_offset());
+        a != c && a.min(c) <= off && off <= a.max(c)
+    }
+    /// Whether `expand` would do anything.
+    pub fn can_expand(&self) -> bool {
+        self.selected_ranges()
+            .into_iter()
+            .any(|(seg, r)| notation::expand(&self.doc.get(seg).text, r).is_some())
+    }
+    /// Writes out each commutator and conjugate that's all in the selection.
+    pub fn expand(&mut self) {
+        let Some((lo, mut hi, backward)) = self.text_selection() else {
+            return;
+        };
+        let before = self.snapshot();
+        for (seg, r) in self.selected_ranges() {
+            if let Some((text, new)) = notation::expand(&self.doc.get(seg).text, r) {
+                self.doc.set_text(seg, text);
+                if seg == hi.seg {
+                    hi.off = new.end;
+                }
+            }
+        }
+        self.record(before);
+        self.reselect(lo, hi, backward);
+    }
+    /// Whether `invert` would do anything: the selection is in one segment,
+    /// and has every group whose brackets it has.
+    pub fn can_invert(&self) -> bool {
+        match self.selected_ranges().as_slice() {
+            [(seg, r)] => notation::invert(&self.doc.get(*seg).text, r.clone()).is_some(),
+            _ => false,
+        }
+    }
+    /// Replaces the selection with moves that undo it.
+    pub fn invert(&mut self) {
+        let Some((lo, mut hi, backward)) = self.text_selection() else {
+            return;
+        };
+        if lo.seg != hi.seg {
+            return;
+        }
+        let Some((text, new)) = notation::invert(&self.doc.get(lo.seg).text, lo.off..hi.off) else {
+            return;
+        };
+        let before = self.snapshot();
+        self.doc.set_text(lo.seg, text);
+        hi.off = new.end;
+        self.record(before);
+        self.reselect(lo, hi, backward);
     }
 
     /// Twists at the caret. Before a bubble's first `>`, that's the end of

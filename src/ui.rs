@@ -64,6 +64,22 @@ enum TimelineAction {
     StartUnits(Unit, (Pos, Pos)),
     /// The drag after one reached a unit.
     ExtendUnits((Pos, Pos)),
+    /// A right click, which opens the context menu there.
+    Menu(Pos),
+}
+
+/// An item in the context menu.
+#[derive(Clone, Copy)]
+enum MenuCommand {
+    Cut,
+    Copy,
+    Paste,
+    /// A commutator or conjugate, by its separator.
+    Binary(char),
+    /// Brackets around the selection.
+    Wrap(&'static str, &'static str),
+    Expand,
+    Invert,
 }
 
 /// A drag after a double or triple click, which extends by whole units.
@@ -92,6 +108,9 @@ pub struct App {
     /// clicks on release, too late to start a drag by units.
     press: (u32, f64, Pos2),
     unit_drag: Option<UnitDrag>,
+    /// Where the last right click was, for the separator that the context
+    /// menu puts in.
+    menu_at: Option<Pos>,
 }
 
 impl eframe::App for App {
@@ -168,6 +187,7 @@ impl App {
             ignore_hover: false,
             press: (0, f64::NEG_INFINITY, Pos2::ZERO),
             unit_drag: None,
+            menu_at: None,
         }
     }
 
@@ -218,6 +238,7 @@ impl App {
             .preview
             .filter(|p| !self.ignore_hover && self.is_valid(*p));
         let mut preview = None;
+        let mut command = None;
         // Panels show the state as it was when each was drawn, and a later one
         // can change it, so redraw everything until nothing does.
         let drawn = self.drawn();
@@ -226,7 +247,7 @@ impl App {
             .resizable(true)
             .default_size(190.0)
             .show(ui, |ui| {
-                self.timeline(ui, &mut preview);
+                self.timeline(ui, &mut preview, &mut command);
             });
         egui::Panel::right("views")
             .resizable(true)
@@ -243,11 +264,14 @@ impl App {
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| {
-                    self.editor(ui, height, &mut preview);
+                    self.editor(ui, height, &mut preview, &mut command);
                 });
         });
         preview = preview.filter(|_| !self.ignore_hover);
         self.preview = preview;
+        if let Some(c) = command {
+            self.run(ui, c);
+        }
         if self.drawn() != drawn {
             ui.ctx().request_discard("changed after drawing");
             // In case that's past `max_passes`.
@@ -453,6 +477,46 @@ impl App {
         self.session.twist(mv, self.views[view].mode.resolve(caret));
     }
 
+    fn run(&mut self, ui: &Ui, command: MenuCommand) {
+        let s = &mut self.session;
+        match command {
+            MenuCommand::Cut => {
+                if let Some(t) = s.cut() {
+                    ui.ctx().copy_text(t);
+                }
+            }
+            MenuCommand::Copy => {
+                if let Some(t) = s.copy() {
+                    ui.ctx().copy_text(t);
+                }
+            }
+            // It comes back as a paste event. See `shortcuts`.
+            MenuCommand::Paste => ui
+                .ctx()
+                .send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+            MenuCommand::Binary(sep) => {
+                s.wrap_binary(sep, self.menu_at.unwrap_or(s.caret()));
+            }
+            MenuCommand::Wrap(open, close) => {
+                s.wrap(open, close);
+            }
+            MenuCommand::Expand => s.expand(),
+            MenuCommand::Invert => s.invert(),
+        }
+    }
+
+    /// Where a right click on the text box or the timeline leaves the caret:
+    /// in place if it's in the selection, or else at the click.
+    fn right_click(&mut self, pos: Pos, off: Option<usize>, timeline: bool) {
+        if !off.is_some_and(|o| self.session.selection_contains(o)) {
+            match off {
+                Some(o) if !timeline => self.session.set_caret_offset(o),
+                _ => self.session.go_to_on_timeline(pos),
+            }
+        }
+        self.menu_at = Some(pos);
+    }
+
     fn save(&mut self) {
         self.status = match std::fs::write(&self.path, self.session.doc().to_file()) {
             Ok(()) => {
@@ -521,7 +585,13 @@ impl App {
 
     // ---- text editor ----
 
-    fn editor(&mut self, ui: &mut Ui, min_height: f32, preview: &mut Option<Pos>) {
+    fn editor(
+        &mut self,
+        ui: &mut Ui,
+        min_height: f32,
+        preview: &mut Option<Pos>,
+        command: &mut Option<MenuCommand>,
+    ) {
         let id = Id::unique(EDITOR);
         let mut text = self.session.text();
         let caret = self.session.caret_offset();
@@ -587,6 +657,8 @@ impl App {
             .layouter(&mut layouter)
             .show(ui);
         *ui.visuals_mut() = visuals;
+        out.response
+            .context_menu(|ui| *command = context_menu(ui, &self.session));
         let wrap = out.galley.job.wrap.max_width;
         let paint_text = |ui: &Ui, s: &Session| {
             let text = s.text();
@@ -634,6 +706,17 @@ impl App {
                 p.button_released(egui::PointerButton::Primary),
                 i.modifiers.shift,
                 p.interact_pos(),
+            )
+        });
+        // egui moves its caret on a right click, but the session's stays in
+        // a selection that the click is in.
+        let secondary = egui::PointerButton::Secondary;
+        let (right_pressed, right_click) = ui.input(|i| {
+            let p = &i.pointer;
+            let pressed = p.button_pressed(secondary);
+            (
+                pressed,
+                pressed || p.button_down(secondary) || p.button_released(secondary),
             )
         });
         // Offset of the character under a point.
@@ -708,6 +791,15 @@ impl App {
                     paint_text(ui, &self.session);
                     return; // the layout is stale
                 }
+            }
+        } else if right_click {
+            if right_pressed
+                && out.response.hovered()
+                && let Some(p) = pointer
+            {
+                let off = byte(out.galley.cursor_from_pos(p - out.galley_pos));
+                let pos = self.session.at_offset(off).0;
+                self.right_click(pos, Some(off), false);
             }
         } else if let Some(r) = range
             && (byte(r.primary), byte(r.secondary)) != (caret, anchor)
@@ -900,7 +992,12 @@ impl App {
 
     /// Draws each path like a line of text with a cell per token and per fork.
     /// The caret goes between cells.
-    fn timeline(&mut self, ui: &mut Ui, preview: &mut Option<Pos>) {
+    fn timeline(
+        &mut self,
+        ui: &mut Ui,
+        preview: &mut Option<Pos>,
+        command: &mut Option<MenuCommand>,
+    ) {
         const ROW: f32 = 26.0;
         struct Node {
             x: f32,
@@ -938,6 +1035,7 @@ impl App {
         let action = egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
             let size = size.max(ui.available_size());
             let (rect, r) = ui.allocate_exact_size(size, Sense::click_and_drag());
+            r.context_menu(|ui| *command = context_menu(ui, &self.session));
             let painter = ui.painter().clone();
             let origin = rect.min + vec2(20.0, 20.0);
             let at = |n: &Node, x: f32| origin + vec2(n.x + x, n.row as f32 * ROW);
@@ -1168,13 +1266,13 @@ impl App {
                     .iter()
                     .min_by(|a, b| a.0.distance(pointer).total_cmp(&b.0.distance(pointer)))
                     .filter(|c| c.0.distance(pointer) <= 12.0)?;
-                let anchor = self.session.unit_at(cell.1, unit)?;
+                let anchor = self.session.unit_on_timeline(cell.1, unit)?;
                 return Some(TimelineAction::StartUnits(unit, anchor));
             }
             if let Some(d) = self.unit_drag.filter(|d| d.timeline && (down || released)) {
                 let cell = drag_target(&cells, pointer, d.anchor.1.seg)?;
                 return Some(TimelineAction::ExtendUnits(
-                    self.session.unit_at(cell, d.unit)?,
+                    self.session.unit_on_timeline(cell, d.unit)?,
                 ));
             }
             if r.dragged_by(egui::PointerButton::Primary) {
@@ -1186,6 +1284,9 @@ impl App {
                 };
                 let to = drag_target(&stops, pointer, from.unwrap_or(self.session.anchor()).seg)?;
                 return Some(TimelineAction::Select { from, to });
+            }
+            if r.secondary_clicked() {
+                return Some(TimelineAction::Menu(nearest_to(pointer, None)?.1));
             }
             let nearest = nearest_to(pointer, shift.then(|| self.session.anchor()))?;
             if nearest.0.distance(pointer) > 12.0 {
@@ -1226,10 +1327,48 @@ impl App {
                     let anchor = self.unit_drag.expect("dragging by units").anchor;
                     self.session.select_units(anchor, target);
                 }
+                TimelineAction::Menu(pos) => {
+                    let off = self.session.offset_of(pos);
+                    self.right_click(pos, off, true);
+                }
             }
             ui.ctx().request_repaint();
         }
     }
+}
+
+/// Draws the context menu, and returns the item clicked. Without a
+/// selection, it only pastes. FMC tools need a selection of text, and
+/// inverting needs one in a single segment that cuts no group.
+fn context_menu(ui: &mut Ui, s: &Session) -> Option<MenuCommand> {
+    let mut out = None;
+    let mut item = |ui: &mut Ui, enabled: bool, text: &str, key: Option<Key>, command| {
+        let mut button = egui::Button::new(text);
+        if let Some(k) = key {
+            let shortcut = egui::KeyboardShortcut::new(Modifiers::COMMAND, k);
+            button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+        }
+        if ui.add_enabled(enabled, button).clicked() {
+            out = Some(command);
+        }
+    };
+    if s.anchor_offset() == s.caret_offset() {
+        item(ui, true, "Paste", Some(Key::V), MenuCommand::Paste);
+        return out;
+    }
+    item(ui, true, "Cut", Some(Key::X), MenuCommand::Cut);
+    item(ui, true, "Copy", Some(Key::C), MenuCommand::Copy);
+    item(ui, true, "Paste", Some(Key::V), MenuCommand::Paste);
+    ui.separator();
+    let text = s.selects_text();
+    item(ui, text, "Group", None, MenuCommand::Wrap("(", ")"));
+    item(ui, text, "Commutator", None, MenuCommand::Binary(','));
+    item(ui, text, "Conjugate", None, MenuCommand::Binary(':'));
+    item(ui, text, "NISS", None, MenuCommand::Wrap("^(", ")"));
+    ui.separator();
+    item(ui, s.can_expand(), "Expand", None, MenuCommand::Expand);
+    item(ui, s.can_invert(), "Invert", None, MenuCommand::Invert);
+    out
 }
 
 /// Width of a cell on the timeline.

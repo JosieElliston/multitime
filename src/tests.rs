@@ -20,6 +20,34 @@ impl Rng {
             .map(|_| BITS[self.below(BITS.len())])
             .collect()
     }
+    /// Well-formed notation, with groups nested up to `depth`.
+    fn notation(&mut self, depth: usize, top: bool) -> String {
+        let mut out = String::new();
+        for _ in 0..self.below(5) {
+            let item = match self.below(if depth == 0 { 3 } else { 9 }) {
+                0 => ["R", "U2", "F'", "Rw2'", "x", "M", "."][self.below(7)].to_owned(),
+                1 => "// c\n".to_owned(),
+                2 => "\n".to_owned(),
+                3 | 4 => {
+                    let sep = [",", ":"][self.below(2)];
+                    let (a, b) = (
+                        self.notation(depth - 1, false),
+                        self.notation(depth - 1, false),
+                    );
+                    format!("[{a}{sep} {b}]{}", ["", "2", "'"][self.below(3)])
+                }
+                5 if top => format!("^({})", self.notation(depth - 1, false)),
+                _ => format!(
+                    "({}){}",
+                    self.notation(depth - 1, false),
+                    ["", "3", "2'"][self.below(3)]
+                ),
+            };
+            out.push_str(&item);
+            out.push(' ');
+        }
+        out
+    }
     fn off(&mut self, s: &str) -> usize {
         loop {
             let o = self.below(s.len() + 1);
@@ -1244,4 +1272,180 @@ fn branch_starts() {
     assert_eq!(show(&s), "R\n|A\n[^>]\nB");
     s.move_lines(true);
     assert_eq!(show(&s), "R\n[^>]\n|A\nB");
+}
+
+fn inv(s: &str) -> Option<String> {
+    invert(s, 0..s.len()).map(|(t, _)| t)
+}
+fn exp(s: &str) -> Option<String> {
+    expand(s, 0..s.len()).map(|(t, _)| t)
+}
+
+#[test]
+fn inverting() {
+    assert_eq!(inv("R U2 F'").unwrap(), "F U2' R'");
+    assert_eq!(inv("[R, U] [F: D]2").unwrap(), "[F: D']2 [U, R]");
+    assert_eq!(inv("^(R U) (F .)3'").unwrap(), "(. F')3' ^(U' R')");
+    // Lines go in reverse order, each keeping its comment.
+    assert_eq!(inv("R U // a\n\nF // b").unwrap(), "F' // b\n\nU' R' // a");
+    // A group that isn't all in it, a cut token, or nothing, can't be.
+    assert_eq!(invert("(R U) F", 1..7), None);
+    assert_eq!(invert("[R, U]", 1..5), None);
+    assert_eq!(invert("R2 U", 1..4), None);
+    assert_eq!(invert("R  ", 1..3), None);
+    assert_eq!(inv("R Q"), None);
+    // A range up to a multiplier takes it in, but keeps its end.
+    assert_eq!(
+        invert("[R, U]2 F", 0..6),
+        Some(("[U, R]2 F".to_owned(), 0..6))
+    );
+    assert_eq!(invert("(R U)2", 1..4), Some(("(U' R')2".to_owned(), 1..6)));
+    // Within a group, and keeping the whitespace around it.
+    assert_eq!(
+        invert("(R U) F", 1..4),
+        Some(("(U' R') F".to_owned(), 1..6))
+    );
+    assert_eq!(invert("F R U ", 1..6), Some(("F U' R' ".to_owned(), 1..8)));
+}
+
+#[test]
+fn inverting_undoes() {
+    let mut rng = Rng(7);
+    let mut n = 0;
+    for i in 0..4000 {
+        let s = if i % 2 == 0 {
+            rng.text(12)
+        } else {
+            rng.notation(3, true)
+        };
+        let Some(t) = inv(&s) else { continue };
+        n += 1;
+        let (a, b) = (parse(&s).op, parse(&t).op);
+        assert_eq!(b.left, a.left.inv(), "{s:?} -> {t:?}");
+        assert_eq!(b.right, a.right.inv(), "{s:?} -> {t:?}");
+        assert_eq!(inv(&t).map(|u| parse(&u).op), Some(a), "{s:?} -> {t:?}");
+    }
+    assert!(n > 200, "{n}");
+}
+
+#[test]
+fn expanding() {
+    assert_eq!(exp("[R, U]").unwrap(), "R U R' U'");
+    assert_eq!(exp("[R: U]").unwrap(), "R U R'");
+    // A multiplier in the range is written out, and one that isn't stays.
+    assert_eq!(exp("[R: U]2").unwrap(), "R U R' R U R'");
+    assert_eq!(exp("[R, U]'").unwrap(), "U R U' R'");
+    assert_eq!(exp("[R, [U, F]2]0").unwrap(), "");
+    assert_eq!(
+        expand("F [R U: [D, B]2]2' L", 2..16),
+        Some(("F (R U D B D' B' D B D' B' U' R')2' L".to_owned(), 2..33))
+    );
+    assert_eq!(exp("(R [U, D])").unwrap(), "(R U D U' D')");
+    assert_eq!(exp("R[U,F]D").unwrap(), "R U F U' F' D");
+    assert_eq!(exp("R (U)"), None);
+    // Only groups all in the range.
+    assert_eq!(
+        expand("[R, U] [F: D]", 0..9),
+        Some(("R U R' U' [F: D]".to_owned(), 0..12))
+    );
+    assert_eq!(
+        expand("[R, U] [F: D]", 1..13),
+        Some(("[R, U] F D F'".to_owned(), 1..13))
+    );
+    // A comment at the end of a side keeps its line break.
+    assert_eq!(exp("[R // a\n, U] F").unwrap(), "R // a\nU R' // a\nU' F");
+}
+
+#[test]
+fn expanding_keeps_the_state() {
+    let mut rng = Rng(11);
+    let mut n = 0;
+    for i in 0..4000 {
+        let s = if i % 2 == 0 {
+            rng.text(12)
+        } else {
+            rng.notation(3, true)
+        };
+        let Some(t) = exp(&s) else { continue };
+        n += 1;
+        assert_eq!(parse(&t).op, parse(&s).op, "{s:?} -> {t:?}");
+    }
+    assert!(n > 500, "{n}");
+}
+
+#[test]
+fn commutators_from_the_selection() {
+    let mut s = Session::new(Doc::new("F R U D"));
+    let root = s.doc().root();
+    let at = |off| Pos { seg: root, off };
+    // The separator goes at the gap nearest the click.
+    s.set_selection(at(2), at(7));
+    assert!(s.wrap_binary(',', at(5)));
+    assert_eq!(s.doc().get(root).text, "F [R U, D]");
+    assert_eq!((s.anchor(), s.caret()), (at(3), at(9)));
+    s.undo();
+    s.set_selection(at(7), at(2));
+    assert!(s.wrap_binary(':', at(3)));
+    assert_eq!(s.doc().get(root).text, "F [R: U D]");
+    assert_eq!((s.anchor(), s.caret()), (at(9), at(3)));
+    s.undo();
+    // Not in a group that the selection has all of, nor off the selection.
+    s.replace(Doc::new("F (R U) D"));
+    let root = s.doc().root();
+    let at = |off| Pos { seg: root, off };
+    s.set_selection(at(2), at(9));
+    assert!(s.wrap_binary(',', at(5)));
+    assert_eq!(s.doc().get(root).text, "F [(R U), D]");
+    s.undo();
+    s.set_selection(at(2), at(9));
+    assert!(s.wrap_binary(',', at(0)));
+    assert_eq!(s.doc().get(root).text, "F [, (R U) D]");
+    // Without a selection, nothing.
+    s.go_to(at(0));
+    assert!(!s.wrap_binary(',', at(0)));
+}
+
+#[test]
+fn fmc_tools_across_forks() {
+    let mut s = Session::new(Doc::from_file("R [U, F]\n>\n  [D: B] L\n").unwrap());
+    let root = s.doc().root();
+    let child = s.doc().get(root).children[0];
+    s.set_selection(Pos { seg: root, off: 2 }, Pos { seg: child, off: 6 });
+    assert!(s.can_expand() && !s.can_invert());
+    s.expand();
+    assert_eq!(s.doc().to_file(), "R U F U' F'\n>\n  D B D' L\n");
+    assert_eq!(s.anchor(), Pos { seg: root, off: 2 });
+    assert_eq!(s.caret(), Pos { seg: child, off: 6 });
+    assert!(!s.can_expand());
+    // A commutator's separator can go in another segment.
+    s.set_selection(Pos { seg: root, off: 0 }, Pos { seg: child, off: 3 });
+    assert!(s.wrap_binary(',', Pos { seg: child, off: 1 }));
+    assert_eq!(s.doc().to_file(), "[R U F U' F'\n>\n  D, B] D' L\n");
+    // Inverting in one segment.
+    s.set_selection(
+        Pos { seg: child, off: 6 },
+        Pos {
+            seg: child,
+            off: 10,
+        },
+    );
+    assert!(s.can_invert());
+    s.invert();
+    assert_eq!(s.doc().to_file(), "[R U F U' F'\n>\n  D, B] L' D\n");
+}
+
+#[test]
+fn double_click_leaves_out_the_multiplier() {
+    let t = "R [U, F]2' D";
+    // On a bracket or separator, the group without its multiplier, and on
+    // that, all of it.
+    for off in [2, 5, 7] {
+        assert_eq!(unit_at(t, off, Unit::Token), Some(2..8), "{off}");
+    }
+    for off in [8, 9] {
+        assert_eq!(unit_at(t, off, Unit::Token), Some(2..10), "{off}");
+    }
+    // Covering the brackets is enough to keep a range from growing.
+    assert_eq!(close_groups(t, 2..8), 2..8);
+    assert_eq!(close_groups(t, 4..9), 2..10);
 }
