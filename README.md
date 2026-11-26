@@ -42,7 +42,7 @@ esc cycles between focus on the text box and the two puzzles.
 
 a **bubble** has a `>` for each child, with one active child. it's on a line of its own, and the line breaks around it aren't part of the text: they only separate it from the lines before and after it. so an empty segment has no line, and two bubbles can be on adjacent lines.
 
-the caret can go into a bubble, before its first `>` or after one of them, and whichever `>` it's right after becomes active. Up and Down onto a bubble's line go after the active `>`. to pass a bubble without changing the active branch, hold option.
+the caret can go into a bubble, before its first `>` or after one of them, and whichever `>` it's right after becomes active. Up and Down onto a bubble's line go after the active `>`. to pass a bubble without changing the active branch, hold option. in text mode, Shift+Left at a bubble's line's start or Shift+Right at its end selects all of its `>`s, like Shift+Cmd+Left or Right.
 
 in twist mode and on the timeline, a branch starts right after its `>`, rather than at the start of its first line.
 
@@ -68,7 +68,7 @@ Shift+Option+an arrow:
 - toward the caret's end of the selection, or either way from a caret or a double or triple click, grows it: adds the next sibling that way. with none, it takes all of the siblings, and with all of them, it selects the parent. so from `[U|' R : F]2' U' (R' L)2`, Right selects `U'`, `U' R`, `U' R : F`, `[U' R : F]`, `[U' R : F]2'`, and so on, a sibling at a time.
 - toward the anchor's end, undoes a grow: removes the sibling at the caret's end, or goes into a lone group. that's exact, but for a grow that took all of the siblings from partway through them: undoing that removes one from the caret's end.
 
-it goes across bubbles, but a selection in a bubble stays in it, as with the mouse. in twist mode, a run of moves on one line counts as one sibling, so from the middle of one, it goes to its end.
+it goes across bubbles. on a bubble's line, or with `>`s selected, it's Shift+Cmd+arrow instead, so it stays in the bubble, as with the mouse. in twist mode, right after a `>` is the branch's start, not in the bubble, and a run of moves on one line counts as one sibling, so from the middle of one, it goes to its end.
 
 ### context menu
 

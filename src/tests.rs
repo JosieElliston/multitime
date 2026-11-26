@@ -1681,3 +1681,47 @@ fn selections_by_meaning_stay_semantic() {
         }
     }
 }
+
+#[test]
+fn selecting_by_meaning_in_a_bubble() {
+    let doc = Doc::from_file("R U\n>\n  D\n>\n  F\n>\n  L\n").unwrap();
+    let b = Session::new(doc.clone()).bubbles()[0].clone();
+    // In text, Shift+Option+arrows on a bubble's line are Shift+Cmd+arrows.
+    for off in b.marks() {
+        for keys in ["<", ">", "<<", ">>", "<>", "><", ">>>"] {
+            let mut s = Session::new(doc.clone());
+            s.set_caret_offset(off);
+            let mut t = s.clone();
+            for k in keys.chars() {
+                s.select_by_meaning(k == '>', false);
+                t.step_line(k == '>', true);
+            }
+            assert_eq!(
+                (s.anchor_offset(), s.caret_offset()),
+                (t.anchor_offset(), t.caret_offset()),
+                "{off} {keys}"
+            );
+        }
+    }
+    // In twist mode, right after a `>` is the branch's start.
+    let mut s = Session::new(doc.clone());
+    s.set_caret_offset(b.line + 2);
+    s.select_by_meaning(true, true);
+    assert_eq!(shown(&s), "R U\n>>>\n«F»");
+
+    // Shift+arrow at the end of a bubble's line selects all of it, and
+    // elsewhere doesn't.
+    for (off, forward) in [(b.line + b.n, true), (b.line, false)] {
+        let mut s = Session::new(doc.clone());
+        s.set_caret_offset(off);
+        assert!(s.select_bubble_at_edge(forward));
+        let (a, c) = (s.anchor_offset(), s.caret_offset());
+        assert_eq!((a.min(c), a.max(c)), (b.line, b.line + b.n), "{off}");
+        assert_eq!(c, off);
+    }
+    for (off, forward) in [(b.line + 1, true), (b.line + 1, false), (b.line, true)] {
+        let mut s = Session::new(doc.clone());
+        s.set_caret_offset(off);
+        assert!(!s.select_bubble_at_edge(forward), "{off} {forward}");
+    }
+}

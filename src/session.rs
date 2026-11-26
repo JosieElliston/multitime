@@ -487,14 +487,17 @@ impl Session {
     /// that covers it. Otherwise, toward the caret's end (or either way with
     /// no selection, or one that a click made), it grows, and toward the
     /// anchor's, it shrinks. With `runs`, as in twist mode, a run of moves on
-    /// one line counts as one. In a bubble, it's `step_word` or `step_run`.
+    /// one line counts as one. In a bubble, it's Shift+Cmd+arrow's
+    /// `step_line`. In twist mode, right after a `>` is the branch's start,
+    /// not in the bubble.
     pub fn select_by_meaning(&mut self, forward: bool, runs: bool) {
-        if self.in_bubble() || self.bubble_selection() {
-            if runs {
-                self.step_run(forward, true);
-            } else {
-                self.step_word(forward, true);
-            }
+        let in_bubble = if runs {
+            self.at_start()
+        } else {
+            self.in_bubble()
+        };
+        if in_bubble || self.bubble_selection() {
+            self.step_line(forward, true);
             return;
         }
         let path = self.doc.path(self.tip);
@@ -536,6 +539,23 @@ impl Session {
             self.set_selection(pos(end), pos(start));
         }
         self.clicked = None;
+    }
+    /// Shift+arrow in text on a bubble's line, at its end that way: selects
+    /// the whole bubble, as Shift+Cmd+arrow does. Returns whether it did.
+    pub fn select_bubble_at_edge(&mut self, forward: bool) -> bool {
+        let caret = (self.caret, self.inside);
+        let Some(parent) = self.bubble_of(caret) else {
+            return false;
+        };
+        if self.anchor.is_some() && !self.bubble_selection() {
+            return false;
+        }
+        let n = self.doc.get(parent).children.len();
+        if self.gap_of(caret) != if forward { n } else { 0 } {
+            return false;
+        }
+        self.step_line(forward, true);
+        true
     }
     /// Moves the caret to the end of a segment.
     pub fn select(&mut self, seg: SegId) {

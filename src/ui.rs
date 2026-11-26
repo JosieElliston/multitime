@@ -389,6 +389,12 @@ impl App {
                         Key::ArrowLeft | Key::ArrowRight if m.command && !m.ctrl && !m.alt => {
                             self.session.step_line(key == Key::ArrowRight, m.shift);
                         }
+                        Key::ArrowLeft | Key::ArrowRight
+                            if m.shift
+                                && !m.alt
+                                && !m.command
+                                && !m.ctrl
+                                && self.session.select_bubble_at_edge(key == Key::ArrowRight) => {}
                         Key::ArrowLeft | Key::ArrowRight if m.alt && !m.command && !m.ctrl => {
                             let forward = key == Key::ArrowRight;
                             if m.shift {

@@ -1065,3 +1065,27 @@ fn expanding_with_or_without_the_multiplier() {
     menu_item(&mut h, "Group");
     assert_eq!(file(&h), "F (R U R' U' R U R' U')\n");
 }
+
+#[test]
+fn shift_arrows_at_a_bubbles_ends_select_it() {
+    let file = "R U\n>\n  D\n>\n  F\n>\n  L\n";
+    let mut h = build_harness(file, harness_builder());
+    // Into text mode.
+    clicks(&mut h, 1, pos2(50.0, 50.0), &[]);
+    for (end, arrow) in [(true, Key::ArrowRight), (false, Key::ArrowLeft)] {
+        let s = &mut h.state_mut().session;
+        let b = s.bubbles()[0].clone();
+        s.set_caret_offset(if end { b.line + b.n } else { b.line });
+        h.run_steps(3);
+        key(&mut h, Modifiers::SHIFT, arrow);
+        assert_eq!(copied(&mut h), ">\n  D\n>\n  F\n>\n  L\n", "{arrow:?}");
+        // And Shift+Option, like Shift+Cmd.
+        let s = &mut h.state_mut().session;
+        s.set_caret_offset(b.line + 1);
+        h.run_steps(3);
+        key(&mut h, Modifiers::SHIFT | Modifiers::ALT, Key::ArrowRight);
+        key(&mut h, Modifiers::SHIFT | Modifiers::ALT, Key::ArrowRight);
+        assert_eq!(copied(&mut h), ">\n  D\n>\n  F\n>\n  L\n", "{arrow:?}");
+    }
+    assert_eq!(h.state().session.doc().to_file(), file);
+}
