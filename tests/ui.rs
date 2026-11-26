@@ -1153,7 +1153,7 @@ fn timeline_shows_stm() {
 
 #[test]
 fn light_mode() {
-    let mut h = harness("(R U)2 [R, U] [F: U'] ^(D L) [R\n");
+    let mut h = harness("// a comment\n(R U)2 [R, U] [F: U'] ^(D L) . [R\n>\n  F\n>\n  B x\n");
     shot(&mut h, "dark");
     h.ctx.set_theme(egui::Theme::Light);
     h.run_steps(3);

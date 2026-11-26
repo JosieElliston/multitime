@@ -12,15 +12,49 @@ use glam::{Quat, Vec3};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-const ACCENT: Color32 = Color32::from_rgb(255, 170, 60);
-const MOVE: Color32 = Color32::from_rgb(110, 170, 255);
-const COMMENT: Color32 = Color32::from_rgb(110, 190, 110);
-const GROUP: Color32 = Color32::from_rgb(190, 140, 255);
-const COMMUTATOR: Color32 = Color32::from_rgb(235, 200, 80);
-const CONJUGATE: Color32 = Color32::from_rgb(70, 205, 200);
-const NISS: Color32 = Color32::from_rgb(255, 120, 200);
-const ERROR: Color32 = Color32::from_rgb(255, 80, 80);
-const DIM: Color32 = Color32::from_gray(120);
+/// Colors for a theme.
+struct Palette {
+    accent: Color32,
+    moves: Color32,
+    comment: Color32,
+    /// A plain group's brackets.
+    group: Color32,
+    commutator: Color32,
+    conjugate: Color32,
+    niss: Color32,
+    error: Color32,
+    dim: Color32,
+}
+const DARK: Palette = Palette {
+    accent: Color32::from_rgb(255, 170, 60),
+    moves: Color32::from_rgb(110, 170, 255),
+    comment: Color32::from_rgb(110, 190, 110),
+    group: Color32::from_rgb(190, 140, 255),
+    commutator: Color32::from_rgb(235, 200, 80),
+    conjugate: Color32::from_rgb(70, 205, 200),
+    niss: Color32::from_rgb(255, 120, 200),
+    error: Color32::from_rgb(255, 80, 80),
+    dim: Color32::from_gray(120),
+};
+/// Darker, for a light background.
+const LIGHT: Palette = Palette {
+    accent: Color32::from_rgb(220, 115, 0),
+    moves: Color32::from_rgb(25, 95, 205),
+    comment: Color32::from_rgb(35, 125, 45),
+    group: Color32::from_rgb(125, 65, 200),
+    commutator: Color32::from_rgb(165, 115, 0),
+    conjugate: Color32::from_rgb(0, 130, 125),
+    niss: Color32::from_rgb(195, 35, 125),
+    error: Color32::from_rgb(210, 30, 30),
+    dim: Color32::from_gray(140),
+};
+fn palette(ui: &Ui) -> &'static Palette {
+    if ui.visuals().dark_mode {
+        &DARK
+    } else {
+        &LIGHT
+    }
+}
 /// Caret in both the text box and the timeline.
 fn caret_stroke(ui: &Ui) -> Stroke {
     Stroke::new(2.0, ui.visuals().strong_text_color())
@@ -122,29 +156,33 @@ impl eframe::App for App {
 
 /// The colors of `text`'s tokens. A group's brackets, separator and
 /// multiplier are its kind's color: plain, commutator, conjugate or NISS.
-fn token_colors(text: &str, tokens: &[notation::Token]) -> Vec<Color32> {
+fn token_colors(p: &Palette, text: &str, tokens: &[notation::Token]) -> Vec<Color32> {
     let mut out: Vec<Color32> = tokens
         .iter()
         .map(|t| match t.kind {
-            TokenKind::Move => MOVE,
-            TokenKind::Pause => DIM,
-            TokenKind::Comment => COMMENT,
+            TokenKind::Move => p.moves,
+            TokenKind::Pause => p.dim,
+            TokenKind::Comment => p.comment,
             TokenKind::Open | TokenKind::Sep | TokenKind::Close { .. } | TokenKind::Multiplier => {
-                GROUP
+                p.group
             }
-            TokenKind::BadClose | TokenKind::Stray | TokenKind::Error => ERROR,
+            TokenKind::BadClose | TokenKind::Stray | TokenKind::Error => p.error,
         })
         .collect();
     // The tokens of each open group, and its color once known.
     let mut open: Vec<(Vec<usize>, Color32)> = vec![];
     for (i, t) in tokens.iter().enumerate() {
         match t.kind {
-            // A nested NISS is an error, but still a group.
+            // A nested p.niss is an error, but still a group.
             TokenKind::Open | TokenKind::Error => {
                 let Some((kind, _)) = notation::opener(&text[t.span.clone()]) else {
                     continue;
                 };
-                let color = if kind == GroupKind::Niss { NISS } else { GROUP };
+                let color = if kind == GroupKind::Niss {
+                    p.niss
+                } else {
+                    p.group
+                };
                 let members = if t.kind == TokenKind::Open {
                     vec![i]
                 } else {
@@ -156,9 +194,9 @@ fn token_colors(text: &str, tokens: &[notation::Token]) -> Vec<Color32> {
                 if let Some(g) = open.last_mut() {
                     g.0.push(i);
                     g.1 = if text[t.span.clone()].starts_with(',') {
-                        COMMUTATOR
+                        p.commutator
                     } else {
-                        CONJUGATE
+                        p.conjugate
                     };
                 }
             }
@@ -179,7 +217,7 @@ fn token_colors(text: &str, tokens: &[notation::Token]) -> Vec<Color32> {
     // Still open: the end of the text is inside them.
     for (members, color) in open {
         for j in members {
-            if out[j] != ERROR {
+            if out[j] != p.error {
                 out[j] = color;
             }
         }
@@ -957,7 +995,8 @@ impl App {
         let segs = self.session.doc().siblings(active);
         let width = segs.len() as f32 * MARK_WIDTH + END_WIDTH;
         let outline = Rect::from_min_size(at - vec2(0.0, 8.5), vec2(width, 17.0));
-        let stroke = Stroke::new(1.0, DIM);
+        let p = palette(ui);
+        let stroke = Stroke::new(1.0, p.dim);
         let inside = egui::StrokeKind::Inside;
         ui.painter()
             .rect_stroke(outline.shrink2(vec2(2.0, 0.0)), 5.0, stroke, inside);
@@ -966,7 +1005,7 @@ impl App {
             let rect = Rect::from_center_size(center, vec2(MARK_WIDTH - 5.0, 13.0));
             let r = ui.interact(rect, Id::unique(("fork mark", seg)), Sense::click());
             let is_selected = seg == active;
-            let color = if is_selected { ACCENT } else { DIM };
+            let color = if is_selected { p.accent } else { p.dim };
             if is_selected || r.hovered() {
                 ui.painter()
                     .rect_filled(rect, 3.0, color.gamma_multiply(0.25));
@@ -1017,10 +1056,10 @@ impl App {
                     *mode = InversionMode::Detached(inversion.flip());
                 }
                 if state.is_solved() {
-                    ui.colored_label(COMMENT, "solved");
+                    ui.colored_label(palette(ui).comment, "solved");
                 }
                 if self.preview.is_some() {
-                    ui.colored_label(DIM, "preview");
+                    ui.colored_label(palette(ui).dim, "preview");
                 }
             });
             let size = vec2(
@@ -1037,8 +1076,8 @@ impl App {
                 v.orientation = (rotation * v.orientation).normalize();
             }
             let border = match inversion {
-                Inversion::Normal => MOVE,
-                Inversion::Inverse => NISS,
+                Inversion::Normal => palette(ui).moves,
+                Inversion::Inverse => palette(ui).niss,
             };
             let width = if self.mode == Mode::Twist(i) {
                 2.0
@@ -1109,6 +1148,7 @@ impl App {
             let (rect, r) = ui.allocate_exact_size(size, Sense::click_and_drag());
             r.context_menu(|ui| *command = context_menu(ui, &self.session));
             let painter = ui.painter().clone();
+            let pal = palette(ui);
             let origin = rect.min + vec2(20.0, 20.0);
             let at = |n: &Node, x: f32| origin + vec2(n.x + x, n.row as f32 * ROW);
             let path = doc.path(self.session.tip());
@@ -1184,14 +1224,14 @@ impl App {
 
             for (&seg, node) in &nodes {
                 let on_path = path.contains(&seg);
-                let color = if on_path { ACCENT } else { DIM };
+                let color = if on_path { pal.accent } else { pal.dim };
                 let line = Stroke::new(if on_path { 2.0 } else { 1.0 }, color.gamma_multiply(0.6));
                 let (start, end) = (at(node, 0.0), at(node, node.len));
                 painter.line_segment([start, end], line);
                 let s = doc.get(seg);
                 stops.push((start, Pos { seg, off: 0 }));
                 let tokens = notation::parse(&s.text).tokens;
-                let colors = token_colors(&s.text, &tokens);
+                let colors = token_colors(pal, &s.text, &tokens);
                 if let Some(parent) = s.parent {
                     let p = &nodes[&parent];
                     let from = at(p, p.len);
@@ -1484,6 +1524,7 @@ fn hover_text(text: &str, off: usize) -> String {
 fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
     const SPACE: char = '\u{a0}'; // doesn't wrap
     let (space, row) = ui.fonts_mut(|f| (f.glyph_width(&FONT, SPACE), f.row_height(&FONT)));
+    let p = palette(ui);
     let mut job = egui::text::LayoutJob::default();
     for seg in text.split_inclusive([OPEN, MARK, END]) {
         let (seg, special) = match seg.chars().next_back() {
@@ -1492,22 +1533,22 @@ fn highlight(ui: &Ui, text: &str) -> egui::text::LayoutJob {
         };
         let mut add = |s: &str, color| job.append(s, 0.0, TextFormat::simple(FONT, color));
         let parsed = notation::parse(seg);
-        let colors = token_colors(seg, &parsed.tokens);
+        let colors = token_colors(p, seg, &parsed.tokens);
         let mut at = 0;
         for (i, t) in parsed.tokens.iter().enumerate() {
-            add(&seg[at..t.span.start], DIM);
+            add(&seg[at..t.span.start], p.dim);
             let unclosed = parsed.open.iter().any(|g| g.span == t.span);
-            let color = if unclosed { ERROR } else { colors[i] };
+            let color = if unclosed { p.error } else { colors[i] };
             add(&seg[t.span.clone()], color);
             at = t.span.end;
         }
-        add(&seg[at..], DIM);
+        add(&seg[at..], p.dim);
         match special {
             // A bubble's line breaks.
-            Some(OPEN | END) => add("\n", DIM),
+            Some(OPEN | END) => add("\n", p.dim),
             Some(_) => {
                 let size = FONT.size * MARK_WIDTH / space;
-                let mut format = TextFormat::simple(FontId::monospace(size), DIM);
+                let mut format = TextFormat::simple(FontId::monospace(size), p.dim);
                 format.line_height = Some(row);
                 job.append(&SPACE.to_string(), 0.0, format);
             }
