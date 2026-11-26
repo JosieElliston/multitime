@@ -547,6 +547,36 @@ pub fn delete(text: &str, caret: usize, forward: bool) -> Option<(String, usize)
     ))
 }
 
+/// Like `delete`, but in a comment, by its tokens as notation, as Option+
+/// Backspace in text does. Its `//` deletes all of it, like a bracket.
+pub fn delete_fine(text: &str, caret: usize, forward: bool) -> Option<(String, usize)> {
+    let tokens = parse(text).tokens;
+    let index = if forward {
+        tokens.iter().position(|t| t.span.end > caret)
+    } else {
+        tokens.iter().rposition(|t| t.span.start < caret)
+    }?;
+    let t = &tokens[index];
+    let body = comment_body(&t.span);
+    let in_body = if forward { caret >= body } else { caret > body };
+    if t.kind == TokenKind::Comment && in_body {
+        // From the first token, so as to keep the space after the `//`.
+        let start =
+            body + (text[body..t.span.end].len() - text[body..t.span.end].trim_start().len());
+        let sub = &text[start..t.span.end];
+        let c = caret.clamp(start, t.span.end) - start;
+        if let Some((new, c)) = delete_fine(sub, c, forward) {
+            let new = format!("{}{new}{}", &text[..start], &text[t.span.end..]);
+            return Some((new, start + c));
+        }
+    }
+    Some(delete_span(
+        text,
+        deletion_span(text, &tokens, index),
+        caret,
+    ))
+}
+
 /// Deletes a span and the whitespace between it and the caret, leaving one
 /// space between what's left where one is needed. Returns the new text and
 /// caret.
@@ -597,7 +627,7 @@ pub fn close_up(mut before: &str, after: &str) -> (String, Range<usize>, usize) 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
     /// A token, or the whole group of a bracket, or a separator's group's
-    /// insides. In a comment, a word, as in any text.
+    /// insides.
     Token,
     /// Tokens up to the nearest bracket, separator or line break, or a
     /// bracket's group's insides, or a separator's whole group.
@@ -658,9 +688,56 @@ fn is_spaced(kind: TokenKind) -> bool {
     kind != TokenKind::Multiplier
 }
 
+/// Where a comment's insides start: after its `//`.
+pub fn comment_body(span: &Range<usize>) -> usize {
+    span.start + 2
+}
+
+/// The insides of a comment, as notation of their own: its tokens, at their
+/// offsets in `text`. They play nothing.
+pub fn comment_tokens(text: &str, span: &Range<usize>) -> Vec<Token> {
+    let body = comment_body(span);
+    parse(&text[body..span.end])
+        .tokens
+        .into_iter()
+        .map(|mut t| {
+            t.span = t.span.start + body..t.span.end + body;
+            if let TokenKind::Close { open, kind } = t.kind {
+                t.kind = TokenKind::Close {
+                    open: open + body,
+                    kind,
+                };
+            }
+            t
+        })
+        .collect()
+}
+
+/// Spans of tokens, with each comment as its `//` and then its insides as
+/// tokens, for moving by token in text.
+pub fn fine_spans(text: &str) -> Vec<Range<usize>> {
+    fn go(text: &str, tokens: Vec<Token>, out: &mut Vec<Range<usize>>) {
+        for t in tokens {
+            if t.kind == TokenKind::Comment {
+                let body = comment_body(&t.span);
+                out.push(t.span.start..body);
+                go(text, comment_tokens(text, &t.span), out);
+            } else {
+                out.push(t.span);
+            }
+        }
+    }
+    let mut out = vec![];
+    go(text, parse(text).tokens, &mut out);
+    out
+}
+
 /// The unit at `off`, for a click on the character starting there. Whitespace
 /// counts as the nearest token on its line. `None` if there isn't one.
-pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
+///
+/// With `comments`, a comment is like a group: its `//` is the bracket, and
+/// its insides are notation. Otherwise, it's a token.
+pub fn unit_at(text: &str, off: usize, unit: Unit, comments: bool) -> Option<Range<usize>> {
     let tokens = parse(text).tokens;
     let line = |o: usize| text[..o].matches('\n').count();
     let index = tokens
@@ -705,45 +782,30 @@ pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
         });
     }
     let span = tokens[index].span.clone();
+    if comments && tokens[index].kind == TokenKind::Comment {
+        let body = comment_body(&span);
+        let inside = comment_tokens(text, &span);
+        let insides = match (inside.first(), inside.last()) {
+            (Some(a), Some(b)) => a.span.start..b.span.end,
+            _ => span.clone(),
+        };
+        return Some(if off < body {
+            match unit {
+                Unit::Token => span,
+                Unit::Run => insides,
+            }
+        } else {
+            let r = unit_at(&text[body..span.end], off - body, unit, true);
+            r.map_or(insides, |r| r.start + body..r.end + body)
+        });
+    }
     match unit {
-        Unit::Token if tokens[index].kind == TokenKind::Comment && span.contains(&off) => {
-            Some(word_at(text, span, off))
-        }
         Unit::Token => Some(span),
         Unit::Run => {
             let (lo, hi) = run_of(text, &tokens, &groups, index);
             Some(tokens[lo].span.start..tokens[hi].span.end)
         }
     }
-}
-
-/// The word at `off` within `within`: a run of letters and digits, or of
-/// whitespace, or else one character.
-fn word_at(text: &str, within: Range<usize>, off: usize) -> Range<usize> {
-    let class = |c: char| {
-        if c.is_alphanumeric() || c == '_' {
-            1
-        } else if c.is_whitespace() {
-            2
-        } else {
-            0
-        }
-    };
-    let c = text[off..].chars().next().expect("in a token");
-    if class(c) == 0 {
-        return off..off + c.len_utf8();
-    }
-    let start = text[within.start..off]
-        .char_indices()
-        .rev()
-        .take_while(|(_, d)| class(*d) == class(c))
-        .last()
-        .map_or(off, |(i, _)| within.start + i);
-    let end = text[off..within.end]
-        .char_indices()
-        .find(|(_, d)| class(*d) != class(c))
-        .map_or(within.end, |(i, _)| off + i);
-    start..end
 }
 
 /// Indices of the first and last tokens of the run with token `index` in it.

@@ -23,6 +23,8 @@ there's one caret and one selection, shared by the text box and the timeline.
 
 there are two input modes: **text mode** edits by character, while **twist mode** edits by token. a token is a twist, a bracket, a separator, a multiplier, a comment, or a bubble. a multiplier is a token of its own, so between `]` and `2` is the state after one pass.
 
+in text mode, a comment is like a group: its `//` is the bracket, and what's after it is notation, though it plays nothing. so Option+arrows, Option+Backspace, clicks and selecting by meaning go through a commented-out line the same way as when it wasn't, and through prose word by word. in twist mode and on the timeline, a comment is one token.
+
 esc cycles between focus on the text box and the two puzzles.
 
 | Key | Text mode | Twist mode |
@@ -52,15 +54,15 @@ cmd+[ and cmd+], or clicking a `>`, also switch branches.
 
 in both the text box and the timeline:
 
-- double-click selects a token. on a bracket, it selects the whole group, without its multiplier, and on the multiplier, with it. on a separator, it selects what's inside the group, since the separator is. in a comment, it selects a word.
-- triple-click selects a run: the tokens up to the nearest bracket, separator, or line break, such as one side of a commutator, or a line and its comment. on a bracket, it selects what's inside the group, and on a separator, the whole group.
+- double-click selects a token. on a bracket, it selects the whole group, without its multiplier, and on the multiplier, with it. on a separator, it selects what's inside the group, since the separator is. on a `//`, it selects the whole comment.
+- triple-click selects a run: the tokens up to the nearest bracket, separator, or line break, such as one side of a commutator, or a line and its comment. on a bracket or a `//`, it selects what's inside, and on a separator, the whole group.
 - dragging after either extends by the same unit. a drag over a bracket takes in its whole group, and its multiplier only if the drag reaches it.
 
 a selection that starts in a bubble stays in it, and selects `>`s. any other selection takes in all of a bubble or none of it.
 
 ### selecting by meaning
 
-notation is a tree. its leaves are moves, pauses, comments and multipliers. a group's children are its sides (one, or two around a `,` or `:`), and each side is a list of leaves and groups. brackets and separators are how a group is written, not leaves, and line breaks and bubbles don't count, so a selection never ends beside one. a multiplier is a leaf right after its group. a semantic selection is a run of siblings.
+notation is a tree. its leaves are moves, pauses, multipliers, and in twist mode, comments. a group's children are its sides (one, or two around a `,` or `:`), and each side is a list of leaves and groups. brackets and separators are how a group is written, not leaves, and line breaks and bubbles don't count, so a selection never ends beside one. a multiplier is a leaf right after its group. a semantic selection is a run of siblings.
 
 Shift+Option+an arrow:
 
@@ -118,6 +120,7 @@ These work in both modes:
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | select all, copy, cut, paste |
 | Cmd+Enter | fork at the gap between tokens at or after the caret (so after a comment, not in it), in place of its spaces. right before a bubble, add a first branch to it instead; right after one, or inside one, a branch after the caret's; before a bubble's first `>`, a first one. |
 | Cmd+J | delete the bubble before the caret's segment, keeping the active branch. its line goes, and a line break stays between the text before and after it. |
+| Cmd+/ | comment out the lines that the selection or caret is on, or if they all are already, uncomment them. blank lines stay as they are. |
 | Option+Up, Option+Down | move lines or branches (see [moving lines](#moving-lines)) |
 | Shift+Option+Up, Shift+Option+Down | duplicate lines or branches |
 | Cmd+[, Cmd+] | switch branches |

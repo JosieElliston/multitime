@@ -759,9 +759,11 @@ fn selecting_text_by_units() {
         (3, pos2(x(11.0), 50.0), &[], "D B"),
         (3, pos2(x(5.0), 50.0), &[], "F, D B"),
         (3, pos2(x(1.0), 67.0), &[], "B' D2 // cd"),
-        (3, pos2(x(9.0), 67.0), &[], "B' D2 // cd"),
-        // In a comment, a word.
+        // A comment's insides are notation, so a word is a token, and its
+        // run is in the comment.
         (2, pos2(x(10.0), 67.0), &[], "cd"),
+        (3, pos2(x(9.0), 67.0), &[], "cd"),
+        (2, pos2(x(6.0), 67.0), &[], "// cd"),
         // A drag extends by units, and takes in whole groups.
         (
             2,
@@ -1088,4 +1090,23 @@ fn shift_arrows_at_a_bubbles_ends_select_it() {
         assert_eq!(copied(&mut h), ">\n  D\n>\n  F\n>\n  L\n", "{arrow:?}");
     }
     assert_eq!(h.state().session.doc().to_file(), file);
+}
+
+#[test]
+fn cmd_slash_toggles_comments() {
+    let mut h = build_harness("R U' F\nB D2\n", harness_builder());
+    // In text mode, on the first line, and in twist mode too.
+    clicks(&mut h, 1, pos2(40.0, 50.0), &[]);
+    key(&mut h, Modifiers::COMMAND, Key::Slash);
+    assert_eq!(file(&h), "// R U' F\nB D2\n");
+    // Option+arrows go by its tokens.
+    key(&mut h, Modifiers::ALT | Modifiers::SHIFT, Key::ArrowRight);
+    assert_eq!(copied(&mut h), "U'");
+    key(&mut h, Modifiers::COMMAND, Key::Slash);
+    assert_eq!(file(&h), "R U' F\nB D2\n");
+    assert_eq!(copied(&mut h), "U'");
+    key(&mut h, Modifiers::NONE, Key::Escape);
+    key(&mut h, Modifiers::NONE, Key::End);
+    key(&mut h, Modifiers::COMMAND, Key::Slash);
+    assert_eq!(file(&h), "R U' F\n// B D2\n");
 }

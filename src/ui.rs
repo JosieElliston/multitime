@@ -341,6 +341,9 @@ impl App {
         if key(cmd, Key::J) {
             s.join();
         }
+        if key(cmd, Key::Slash) {
+            s.toggle_comment();
+        }
         if key(cmd, Key::OpenBracket) {
             s.cycle_sibling(-1);
         }
@@ -404,7 +407,7 @@ impl App {
                             }
                         }
                         Key::Backspace | Key::Delete if m.alt && !m.command && !m.ctrl => {
-                            self.session.delete(key == Key::Delete);
+                            self.session.delete_word(key == Key::Delete);
                         }
                         _ => return true,
                     }

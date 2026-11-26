@@ -406,10 +406,11 @@ impl Session {
             .map_or(new, |b| b.active_mark())
     }
     /// Ends of the unit that a click on the character at `pos` selects. Off a
-    /// segment's end, that's the bubble after it.
-    pub fn unit_at(&self, pos: Pos, unit: Unit) -> Option<(Pos, Pos)> {
+    /// segment's end, that's the bubble after it. With `comments`, a comment
+    /// is like a group, as in text; see `notation::unit_at`.
+    pub fn unit_at(&self, pos: Pos, unit: Unit, comments: bool) -> Option<(Pos, Pos)> {
         let text = &self.doc.get(pos.seg).text;
-        let r = notation::unit_at(text, pos.off, unit)?;
+        let r = notation::unit_at(text, pos.off, unit, comments)?;
         Some((
             Pos {
                 seg: pos.seg,
@@ -422,9 +423,10 @@ impl Session {
         ))
     }
     /// The same for the timeline's cell for the token at `pos`. The timeline
-    /// goes by tokens, so a unit there ends after a whole token.
+    /// goes by tokens, so a unit there ends after a whole token, and a
+    /// comment is one.
     pub fn unit_on_timeline(&self, pos: Pos, unit: Unit) -> Option<(Pos, Pos)> {
-        let (start, mut end) = self.unit_at(pos, unit)?;
+        let (start, mut end) = self.unit_at(pos, unit, false)?;
         let text = &self.doc.get(end.seg).text;
         let (gap, partway) = notation::gap(text, end.off);
         if partway {
@@ -439,7 +441,7 @@ impl Session {
             let parent = self.doc.get(b.seg).parent.expect("bubbles have parents");
             return Some((self.doc.end(parent), Pos { seg: b.seg, off: 0 }));
         }
-        self.unit_at(self.at_offset(off).0, unit)
+        self.unit_at(self.at_offset(off).0, unit, true)
     }
     /// Selects from the start of one unit to the end of another, and any group
     /// whose bracket that covers. The caret goes at `target`'s far end. Does
@@ -500,7 +502,7 @@ impl Session {
             .iter()
             .map(|s| self.doc.get(*s).text.as_str())
             .collect();
-        let model = select::Model::new(&texts);
+        let model = select::Model::new(&texts, !runs);
         let pt = |p: Pos| {
             (
                 path.iter().position(|s| *s == p.seg).expect("on path"),
@@ -554,6 +556,86 @@ impl Session {
         self.step_line(forward, true);
         true
     }
+    /// Cmd+/: comments out the lines that the selection or caret is on, with
+    /// a `// ` before each, or if they all are already, takes that out. Blank
+    /// lines stay as they are, and so does a line that a selection only ends
+    /// at the start of. The selection stays on the same text.
+    pub fn toggle_comment(&mut self) {
+        if self.at_start() || self.bubble_selection() {
+            return;
+        }
+        let before = self.snapshot();
+        let path = self.doc.path(self.tip);
+        let key = |p: Pos| {
+            (
+                path.iter().position(|s| *s == p.seg).expect("on path"),
+                p.off,
+            )
+        };
+        let (anchor, caret) = (self.anchor(), self.caret);
+        let (lo, hi) = (
+            std::cmp::min_by_key(anchor, caret, |p| key(*p)),
+            std::cmp::max_by_key(anchor, caret, |p| key(*p)),
+        );
+        // Where each line's text starts, after its indent, and the line.
+        let mut lines: Vec<(SegId, usize, &str)> = vec![];
+        for &seg in &path[key(lo).0..=key(hi).0] {
+            let text = &self.doc.get(seg).text;
+            let from = if seg == lo.seg { lo.off } else { 0 };
+            let to = if seg == hi.seg { hi.off } else { text.len() };
+            let mut start = 0;
+            for line in text.split('\n') {
+                let end = start + line.len();
+                let ends_there = start == to && lo != hi;
+                if start <= to && from <= end && !ends_there && !line.trim().is_empty() {
+                    let indent = line.len() - line.trim_start().len();
+                    lines.push((seg, start + indent, line.trim_start()));
+                }
+                start = end + 1;
+            }
+        }
+        if lines.is_empty() {
+            return;
+        }
+        let uncomment = lines.iter().all(|(_, _, l)| l.starts_with("//"));
+        // Each edit: where, how much it takes out, and what it puts in.
+        let edits: Vec<(SegId, usize, usize, &str)> = lines
+            .iter()
+            .map(|&(seg, at, line)| {
+                if uncomment {
+                    let n = if line.starts_with("// ") { 3 } else { 2 };
+                    (seg, at, n, "")
+                } else {
+                    (seg, at, 0, "// ")
+                }
+            })
+            .collect();
+        let mut anchor = self.anchor;
+        let mut caret = self.caret;
+        // From the end, so the earlier offsets still hold.
+        for &(seg, at, n, s) in edits.iter().rev() {
+            let shift = |p: &mut Pos| {
+                if p.seg == seg && p.off > at {
+                    p.off = if p.off < at + n {
+                        at
+                    } else {
+                        p.off - n + s.len()
+                    };
+                }
+            };
+            shift(&mut caret);
+            if let Some((p, _)) = &mut anchor {
+                shift(p);
+            }
+            let text = &self.doc.get(seg).text;
+            let new = format!("{}{s}{}", &text[..at], &text[at + n..]);
+            self.doc.set_text(seg, new);
+        }
+        self.caret = caret;
+        self.anchor = anchor.filter(|(p, _)| *p != caret);
+        self.record_keeping_selection(before);
+    }
+
     /// Moves the caret to the end of a segment.
     pub fn select(&mut self, seg: SegId) {
         self.go_to(self.doc.end(seg));
@@ -636,8 +718,9 @@ impl Session {
         self.move_on_timeline(self.stepped(forward), extend);
     }
     /// Moves the caret like Option+arrows in text: to the start of the token
-    /// before it, or the end of the one after it. A fork counts as a token, and
-    /// passing it keeps the branch.
+    /// before it, or the end of the one after it. A comment's `//` and its
+    /// insides are tokens. A fork counts as a token, and passing it keeps the
+    /// branch.
     pub fn step_word(&mut self, forward: bool, extend: bool) {
         let empty = self.doc.get(self.caret.seg).text.is_empty();
         if self.at_start() || (self.inside == Inside::Mark && !empty) {
@@ -647,23 +730,17 @@ impl Session {
         let path = self.doc.path(self.tip);
         let Pos { seg, off } = self.caret;
         let i = path.iter().position(|s| *s == seg).expect("caret on path");
-        let tokens = notation::parse(&self.doc.get(seg).text).tokens;
+        let spans = notation::fine_spans(&self.doc.get(seg).text);
         let token = if forward {
-            tokens.iter().find(|t| t.span.end > off)
+            spans.iter().find(|t| t.end > off)
         } else {
-            tokens.iter().rev().find(|t| t.span.start < off)
+            spans.iter().rev().find(|t| t.start < off)
         };
         if let Some(t) = token {
-            let start = Pos {
-                seg,
-                off: t.span.start,
-            };
-            let end = Pos {
-                seg,
-                off: t.span.end,
-            };
+            let start = Pos { seg, off: t.start };
+            let end = Pos { seg, off: t.end };
             let (opposite, to) = if forward { (start, end) } else { (end, start) };
-            if extend && self.anchor.is_none() && t.span.start < off && off < t.span.end {
+            if extend && self.anchor.is_none() && t.start < off && off < t.end {
                 self.set_selection(opposite, to);
             } else {
                 self.move_caret(to, extend);
@@ -870,6 +947,18 @@ impl Session {
     /// backwards, that's the `>` and its branch, and at either side of a
     /// bubble, the bubble.
     pub fn delete(&mut self, forward: bool) {
+        self.delete_by(forward, notation::delete);
+    }
+    /// The same, but in a comment, by its tokens, as Option+Backspace in text
+    /// does.
+    pub fn delete_word(&mut self, forward: bool) {
+        self.delete_by(forward, notation::delete_fine);
+    }
+    fn delete_by(
+        &mut self,
+        forward: bool,
+        delete: fn(&str, usize, bool) -> Option<(String, usize)>,
+    ) {
         let before = self.snapshot();
         let (a, c) = (self.anchor_offset(), self.caret_offset());
         let Pos { seg, off } = self.caret;
@@ -883,7 +972,7 @@ impl Session {
             }
         } else if self.at_mark() && !forward {
             self.remove(c - 1, c, false);
-        } else if let Some((new, off)) = notation::delete(&self.doc.get(seg).text, off, forward) {
+        } else if let Some((new, off)) = delete(&self.doc.get(seg).text, off, forward) {
             self.doc.set_text(seg, new);
             self.caret.off = off;
         } else if forward {

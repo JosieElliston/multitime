@@ -10,6 +10,11 @@
 //!
 //! There's no history: everything comes from a selection's two ends. See
 //! `Model::join`, `Model::grow` and `Model::shrink`.
+//!
+//! In text, a comment is a group too: its `//` is its bracket, and its
+//! insides are notation, though they play nothing. That's so a commented-out
+//! line selects the same way. Twist mode and the timeline go by the
+//! parser's tokens, where a comment is one.
 
 use crate::notation::{self, TokenKind};
 use std::ops::Range;
@@ -69,20 +74,24 @@ pub struct Model {
     top: Vec<usize>,
     /// The container that each node is in, and where.
     parent: Vec<(Container, usize)>,
+    /// Whether comments are groups.
+    comments: bool,
 }
 
 impl Model {
-    pub fn new(texts: &[&str]) -> Self {
+    /// The tree of a path's texts. With `comments`, comments are groups.
+    pub fn new(texts: &[&str], comments: bool) -> Self {
         let mut m = Self {
             texts: texts.iter().map(|t| (*t).to_owned()).collect(),
             nodes: vec![],
             top: vec![],
             parent: vec![],
+            comments,
         };
         for (seg, text) in texts.iter().enumerate() {
             let tokens = notation::parse(text).tokens;
             let mut i = 0;
-            let items = m.sequence(seg, text, &tokens, &mut i);
+            let items = m.sequence(seg, text, &tokens, &mut i, text.len());
             debug_assert_eq!(i, tokens.len(), "only a group's end stops a sequence");
             m.top.extend(items);
         }
@@ -92,13 +101,15 @@ impl Model {
         m
     }
 
-    /// Nodes up to a separator or a closing bracket of an enclosing group.
+    /// Nodes up to a separator or a closing bracket of an enclosing group. An
+    /// unclosed group runs to `end`.
     fn sequence(
         &mut self,
         seg: usize,
         text: &str,
         tokens: &[notation::Token],
         i: &mut usize,
+        end: usize,
     ) -> Vec<usize> {
         let line = |off: usize| text[..off].matches('\n').count();
         let mut out = vec![];
@@ -122,8 +133,8 @@ impl Model {
                 self.parent.push((Container::Top, 0));
                 let mut sides = vec![];
                 let mut start = t.span.end;
-                let end = loop {
-                    let items = self.sequence(seg, text, tokens, i);
+                let close = loop {
+                    let items = self.sequence(seg, text, tokens, i, end);
                     let k = sides.len();
                     for (j, &n) in items.iter().enumerate() {
                         self.parent[n] = (Container::Side(node, k), j);
@@ -147,17 +158,44 @@ impl Model {
                         }
                         None => {
                             sides.push(Side {
-                                region: start..text.len(),
+                                region: start..end,
                                 items,
                             });
                             break None;
                         }
                     }
                 };
-                let inner = t.span.end..end.as_ref().map_or(text.len(), |e| e.start);
+                let inner = t.span.end..close.as_ref().map_or(end, |e| e.start);
                 let last = tokens[..*i].last().map_or(t.span.end, |l| l.span.end);
-                let span_end = end.map_or(last, |e| e.end);
+                let span_end = close.map_or(last, |e| e.end);
                 (t.span.start..span_end, Kind::Group { inner, sides })
+            } else if self.comments && t.kind == TokenKind::Comment {
+                self.nodes.push(Node {
+                    seg,
+                    span: t.span.clone(),
+                    lines: (0, 0),
+                    kind: Kind::Atom { plain: false },
+                });
+                self.parent.push((Container::Top, 0));
+                let inside = notation::comment_tokens(text, &t.span);
+                let mut j = 0;
+                let items = self.sequence(seg, text, &inside, &mut j, t.span.end);
+                debug_assert_eq!(j, inside.len(), "a comment's insides parse alone");
+                for (k, &n) in items.iter().enumerate() {
+                    self.parent[n] = (Container::Side(node, 0), k);
+                }
+                let region = notation::comment_body(&t.span)..t.span.end;
+                let sides = vec![Side {
+                    region: region.clone(),
+                    items,
+                }];
+                (
+                    t.span.clone(),
+                    Kind::Group {
+                        inner: region,
+                        sides,
+                    },
+                )
             } else {
                 let plain = matches!(
                     t.kind,
@@ -218,10 +256,13 @@ impl Model {
         }
     }
     /// Where the caret goes for the gap at `i`: after the item before it, or
-    /// at the start of the container.
+    /// before the first, or in an empty container, at its start.
     fn gap(&self, c: Container, i: usize) -> Pt {
         if i > 0 {
             return self.item_span(c, i - 1).1;
+        }
+        if self.len(c) > 0 {
+            return self.item_span(c, 0).0;
         }
         match c {
             Container::Top => (0, 0),
@@ -270,7 +311,9 @@ impl Model {
             let overlaps = |i: usize| {
                 let (s, e) = self.item_span(c, i);
                 if a == b {
-                    s < a && a < e
+                    // A comment has no closing bracket, so its end is in it,
+                    // as typing there goes on with it.
+                    s < a && (a < e || (a == e && self.is_comment(c, i)))
                 } else {
                     s < b && a < e
                 }
@@ -316,6 +359,13 @@ impl Model {
         }
     }
 
+    /// Whether the `i`th item is a comment, as a group.
+    fn is_comment(&self, c: Container, i: usize) -> bool {
+        self.group_at(c, i).is_some_and(|g| {
+            let n = &self.nodes[g];
+            self.texts[n.seg][n.span.clone()].starts_with("//")
+        })
+    }
     /// The group that's the `i`th item, if it is one.
     fn group_at(&self, c: Container, i: usize) -> Option<usize> {
         if let Container::Sides(_) = c {

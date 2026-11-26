@@ -848,7 +848,7 @@ fn gaps() {
 fn unit(s: &str, u: Unit) -> String {
     let c = s.find('|').unwrap();
     let t = s.replace('|', "");
-    match unit_at(&t, c, u) {
+    match unit_at(&t, c, u, true) {
         Some(r) => format!("{}«{}»{}", &t[..r.start], &t[r.clone()], &t[r.end..]),
         None => t,
     }
@@ -864,10 +864,16 @@ fn unit_examples() {
         // Whitespace is the nearest token on its line.
         ("R | U", Token, "R  «U»"),
         ("R\n|\nU", Token, "R\n\nU"),
-        // In a comment, a word, as in any text.
-        ("R |// a b\nU", Token, "R «/»/ a b\nU"),
+        // A comment is like a group: its `//` is the bracket, and its insides
+        // are notation.
+        ("R |// a b\nU", Token, "R «// a b»\nU"),
+        ("R |// a b\nU", Run, "R // «a b»\nU"),
         ("R // a |bc\nU", Token, "R // a «bc»\nU"),
-        ("R // a| bc\nU", Token, "R // a« »bc\nU"),
+        ("R // a| bc\nU", Token, "R // «a» bc\nU"),
+        ("R // a, (b |c) d\nU", Token, "R // a, (b «c») d\nU"),
+        ("R // a, (b |c) d\nU", Run, "R // a, («b c») d\nU"),
+        ("R // x |(b c\nU", Token, "R // x «(b c»\nU"),
+        ("R // F2L |1+2\nU", Run, "R // «F2L 1+2»\nU"),
         ("R// a b\n|U", Token, "R// a b\n«U»"),
         // A bracket or separator is its group.
         ("x |[R, U] y", Token, "x «[R, U]» y"),
@@ -882,14 +888,14 @@ fn unit_examples() {
         // Runs end at brackets, separators and line breaks.
         ("x [R |U2, F D] y", Run, "x [«R U2», F D] y"),
         ("x [R U2, F |D] y", Run, "x [R U2, «F D»] y"),
+        // A move's run takes in a comment after it.
         ("R U\nF |D // c\nB", Run, "R U\n«F D // c»\nB"),
-        ("R U\nF D // |c\nB", Run, "R U\n«F D // c»\nB"),
-        ("[R: U] // |c", Run, "[R: U] «// c»"),
+        ("R U\nF D // |c\nB", Run, "R U\nF D // «c»\nB"),
         ("R (U |F) D", Run, "R («U F») D"),
         // A bracket's run is the group's insides.
         ("R |( U F ) D", Run, "R ( «U F» ) D"),
         ("x |[R U, F D] y", Run, "x [«R U, F D»] y"),
-        ("|// c", Run, "«// c»"),
+        ("|// c", Run, "// «c»"),
     ];
     for (input, u, want) in cases {
         assert_eq!(unit(input, u), want, "{input:?} {u:?}");
@@ -918,7 +924,7 @@ fn units_hold() {
         let text = rng.text(14);
         let off = rng.off(&text);
         for u in [Unit::Token, Unit::Run] {
-            if let Some(r) = unit_at(&text, off, u) {
+            if let Some(r) = unit_at(&text, off, u, true) {
                 assert!(text.get(r.clone()).is_some(), "{text:?} {off} {u:?}");
                 let c = close_groups(&text, r.clone());
                 assert_eq!(c, r, "units are closed: {text:?} {off} {u:?}");
@@ -940,8 +946,12 @@ fn selecting_units_across_bubbles() {
     let mut s = Session::new(Doc::new("R [U, F] >D B> L"));
     let root = s.doc().root();
     // From `R`, a drag to the `F` takes in its group.
-    let r = s.unit_at(Pos { seg: root, off: 0 }, Unit::Token).unwrap();
-    let f = s.unit_at(Pos { seg: root, off: 6 }, Unit::Token).unwrap();
+    let r = s
+        .unit_at(Pos { seg: root, off: 0 }, Unit::Token, true)
+        .unwrap();
+    let f = s
+        .unit_at(Pos { seg: root, off: 6 }, Unit::Token, true)
+        .unwrap();
     s.select_units(r, f);
     assert_eq!(s.anchor().off, 0);
     assert_eq!(s.caret().off, 8);
@@ -1452,11 +1462,11 @@ fn double_click_leaves_out_the_multiplier() {
     let t = "R [U, F]2' D";
     // On a bracket, the group without its multiplier, and on that, all of it.
     for off in [2, 7] {
-        assert_eq!(unit_at(t, off, Unit::Token), Some(2..8), "{off}");
+        assert_eq!(unit_at(t, off, Unit::Token, true), Some(2..8), "{off}");
     }
-    assert_eq!(unit_at(t, 5, Unit::Run), Some(2..8));
+    assert_eq!(unit_at(t, 5, Unit::Run, true), Some(2..8));
     for off in [8, 9] {
-        assert_eq!(unit_at(t, off, Unit::Token), Some(2..10), "{off}");
+        assert_eq!(unit_at(t, off, Unit::Token, true), Some(2..10), "{off}");
     }
     // Covering the brackets is enough to keep a range from growing.
     assert_eq!(close_groups(t, 2..8), 2..8);
@@ -1607,7 +1617,9 @@ fn selecting_by_meaning_snaps_first() {
     s.set_selection(Pos { seg: root, off: 0 }, Pos { seg: root, off: 2 });
     assert_eq!(presses(&mut s, ">", false), ["«R [U F, D]» B"]);
     // A click's selection has no direction.
-    let u = s.unit_at(Pos { seg: root, off: 3 }, Unit::Token).unwrap();
+    let u = s
+        .unit_at(Pos { seg: root, off: 3 }, Unit::Token, true)
+        .unwrap();
     s.select_units(u, u);
     assert_eq!(presses(&mut s, "<", false), ["R [«U F», D] B"]);
 }
@@ -1786,4 +1798,125 @@ fn growing_by_meaning_reaches_everything() {
             }
         }
     }
+}
+
+#[test]
+fn comments_are_notation_in_text() {
+    let t = "R // a, (b c) d\nU";
+    let spans: Vec<_> = fine_spans(t).into_iter().map(|r| &t[r]).collect();
+    assert_eq!(spans, ["R", "//", "a", ",", "(", "b", "c", ")", "d", "U"]);
+    let del = |s: &str, forward| {
+        let c = s.find('|').unwrap();
+        let (mut t, c) = delete_fine(&s.replace('|', ""), c, forward).unwrap();
+        t.insert(c, '|');
+        t
+    };
+    for (s, forward, want) in [
+        ("R // a b|\nU", false, "R // a|\nU"),
+        ("R // a| b\nU", false, "R // |b\nU"),
+        ("R // |a b\nU", true, "R // |b\nU"),
+        ("R // a (b| c)\nU", false, "R // a (|c)\nU"),
+        // A group in a comment deletes like one outside of it.
+        ("R // a (b c)|\nU", false, "R // a|\nU"),
+        // The `//` deletes all of it, like a bracket.
+        ("R //| a b\nU", false, "R|\nU"),
+        ("R |// a b\nU", true, "R|\nU"),
+    ] {
+        assert_eq!(del(s, forward), want, "{s:?} {forward}");
+    }
+    let mut s = at_caret("R // a |b c\nU");
+    assert_eq!(
+        presses(&mut s, ">>>>", false),
+        [
+            "R // a «b» c\nU",
+            "R // a «b c»\nU",
+            "R // «a b c»\nU",
+            "R «// a b c»\nU",
+        ]
+    );
+    // Twist mode goes by the parser's tokens, where a comment is one.
+    let mut s = at_caret("R // a |b c\nU");
+    assert_eq!(presses(&mut s, ">", true), ["R «// a b c»\nU"]);
+}
+
+#[test]
+fn commented_out_lines_select_the_same() {
+    let mut rng = Rng(2718);
+    for _ in 0..150 {
+        let line = rng
+            .notation(2, true)
+            .replace("// c\n", "")
+            .replace('\n', " ");
+        let line = line.trim();
+        for off in (0..=line.len()).filter(|o| line.is_char_boundary(*o)) {
+            let keys: String = (0..6).map(|_| ['<', '>'][rng.below(2)]).collect();
+            let mut plain = at_caret(&format!("{}|{}", &line[..off], &line[off..]));
+            let mut commented = at_caret(&format!("// {}|{}", &line[..off], &line[off..]));
+            for k in keys.chars() {
+                let ends = |s: &Session| (s.anchor_offset(), s.caret_offset());
+                let (a, c) = ends(&plain);
+                if a.min(c) == 0 && a.max(c) == line.len() {
+                    // All of it: the commented one's next is the comment.
+                    break;
+                }
+                plain.select_by_meaning(k == '>', false);
+                commented.select_by_meaning(k == '>', false);
+                let (a, c) = ends(&plain);
+                assert_eq!(
+                    ends(&commented),
+                    (a + 3, c + 3),
+                    "{line:?} from {off} by {keys}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn toggling_comments() {
+    // `«` is the anchor and `»` the caret, or `|` is the caret alone.
+    let toggle = |s: &str| {
+        let mut text = String::new();
+        let (mut anchor, mut caret) = (None, 0);
+        for ch in s.chars() {
+            match ch {
+                '«' => anchor = Some(text.len()),
+                '»' | '|' => caret = text.len(),
+                ch => text.push(ch),
+            }
+        }
+        let mut s = Session::new(Doc::new(&text));
+        let root = s.doc().root();
+        let pos = |off| Pos { seg: root, off };
+        s.set_selection(pos(anchor.unwrap_or(caret)), pos(caret));
+        s.toggle_comment();
+        shown(&s)
+    };
+    for (s, want) in [
+        ("R U|\nF", "// R U|\nF"),
+        ("// R U|\nF", "R U|\nF"),
+        ("//R U|\nF", "R U|\nF"),
+        // Each line in the selection, but not one it ends at the start of,
+        // nor a blank one, and the selection stays on its text.
+        ("R «U\n\nF\n»D", "// R «U\n\n// F\n»D"),
+        ("«R U\nF»", "«// R U\n// F»"),
+        // Any line that isn't commented out comments them all.
+        ("// R «U\nF»", "// // R «U\n// F»"),
+        ("// R «U\n// F»", "R «U\nF»"),
+        // A line's indent stays before the `//`, and a comment after notation
+        // isn't a commented-out line.
+        ("  R| // a", "  // R| // a"),
+        ("|", "|"),
+    ] {
+        assert_eq!(toggle(s), want, "{s:?}");
+    }
+    // Across a bubble, and undoable.
+    let mut s = Session::new(Doc::new("R U >F D"));
+    let root = s.doc().root();
+    let tip = s.tip();
+    s.set_selection(Pos { seg: root, off: 1 }, Pos { seg: tip, off: 1 });
+    s.toggle_comment();
+    assert_eq!(s.doc().to_file(), "// R U\n>\n  // F D\n");
+    s.undo();
+    assert_eq!(s.doc().to_file(), "R U\n>\n  F D\n");
 }
