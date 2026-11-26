@@ -553,8 +553,11 @@ fn unit_examples() {
         // Whitespace is the nearest token on its line.
         ("R | U", Token, "R  «U»"),
         ("R\n|\nU", Token, "R\n\nU"),
-        ("R |// a b\nU", Token, "R «// a b»\nU"),
-        ("R // a |b\nU", Token, "R «// a b»\nU"),
+        // In a comment, a word, as in any text.
+        ("R |// a b\nU", Token, "R «/»/ a b\nU"),
+        ("R // a |bc\nU", Token, "R // a «bc»\nU"),
+        ("R // a| bc\nU", Token, "R // a« »bc\nU"),
+        ("R// a b\n|U", Token, "R// a b\n«U»"),
         // A bracket or separator is its group.
         ("x |[R, U] y", Token, "x «[R, U]» y"),
         ("x [R|, U] y", Token, "x «[R, U]» y"),
@@ -562,10 +565,12 @@ fn unit_examples() {
         ("x [R, U]|2 y", Token, "x «[R, U]2» y"),
         ("|^(R U", Token, "«^(R U»"),
         ("x [|R, U] y", Token, "x [«R», U] y"),
-        // Runs end at brackets, separators, comments and line breaks.
+        // Runs end at brackets, separators and line breaks.
         ("x [R |U2, F D] y", Run, "x [«R U2», F D] y"),
         ("x [R U2, F |D] y", Run, "x [R U2, «F D»] y"),
-        ("R U\nF |D // c\nB", Run, "R U\n«F D» // c\nB"),
+        ("R U\nF |D // c\nB", Run, "R U\n«F D // c»\nB"),
+        ("R U\nF D // |c\nB", Run, "R U\n«F D // c»\nB"),
+        ("[R: U] // |c", Run, "[R: U] «// c»"),
         ("R (U |F) D", Run, "R («U F») D"),
         // A bracket's run is the group's insides.
         ("R |( U F ) D", Run, "R ( «U F» ) D"),
@@ -653,4 +658,110 @@ fn selecting_units_across_bubbles() {
         (s.offset_of(start), s.offset_of(end)),
         (Some(9), Some(s.bubbles()[0].0.end))
     );
+}
+
+#[test]
+fn stepping_by_runs_and_segments() {
+    let text = "R U [F, D B] L\nB' D2";
+    let mut s = Session::new(Doc::new(text));
+    let root = s.doc().root();
+    s.go_to(Pos { seg: root, off: 0 });
+    let stops = [3, 5, 6, 7, 11, 12, 14, text.len()];
+    for &want in &stops {
+        s.step_run(true, false);
+        assert_eq!(s.caret().off, want);
+    }
+    for &want in stops.iter().rev().skip(1).chain(&[0]) {
+        s.step_run(false, false);
+        assert_eq!(s.caret().off, want);
+    }
+    // From partway through a token, to the start of its run.
+    s.go_to(Pos { seg: root, off: 16 });
+    s.step_run(false, false);
+    assert_eq!(s.caret().off, 14);
+
+    // Segments, across bubbles.
+    let mut s = Session::new(Doc::new("R U >F D> B"));
+    let segs = s.doc().path(s.tip());
+    s.go_to(Pos {
+        seg: segs[1],
+        off: 1,
+    });
+    s.step_segment(true, false);
+    assert_eq!(
+        s.caret(),
+        Pos {
+            seg: segs[1],
+            off: 3
+        }
+    );
+    s.step_segment(true, false);
+    assert_eq!(
+        s.caret(),
+        Pos {
+            seg: segs[2],
+            off: 2
+        }
+    );
+    s.step_segment(true, false);
+    assert_eq!(
+        s.caret(),
+        Pos {
+            seg: segs[2],
+            off: 2
+        }
+    );
+    s.step_segment(false, true);
+    assert_eq!(
+        s.caret(),
+        Pos {
+            seg: segs[2],
+            off: 0
+        }
+    );
+    s.step_segment(false, true);
+    assert_eq!(
+        s.caret(),
+        Pos {
+            seg: segs[1],
+            off: 0
+        }
+    );
+    assert_eq!(
+        s.anchor(),
+        Pos {
+            seg: segs[2],
+            off: 2
+        }
+    );
+    s.step_segment(false, false);
+    s.step_segment(false, false);
+    assert_eq!(s.caret(), Pos { seg: root, off: 0 });
+}
+
+#[test]
+fn stepping_by_runs_visits_gaps() {
+    let mut rng = Rng(999);
+    for _ in 0..5_000 {
+        let text = rng.text(14);
+        let n = parse(&text).tokens.len();
+        let mut s = Session::new(Doc::new(&text));
+        let root = s.doc().root();
+        s.go_to(Pos {
+            seg: root,
+            off: rng.off(&text),
+        });
+        for (forward, want) in [(true, n), (false, 0)] {
+            let mut last = s.caret();
+            for _ in 0..=n {
+                s.step_run(forward, false);
+                assert!(!gap(&text, s.caret().off).1, "{text:?}");
+                if s.caret() == last {
+                    break;
+                }
+                last = s.caret();
+            }
+            assert_eq!(gap(&text, s.caret().off), (want, false), "{text:?}");
+        }
+    }
 }

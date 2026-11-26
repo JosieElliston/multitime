@@ -407,6 +407,58 @@ impl Session {
         };
         self.move_caret(pos, extend);
     }
+    /// Like `step`, but past a whole run: the tokens up to a bracket,
+    /// separator or line break.
+    pub fn step_run(&mut self, forward: bool, extend: bool) {
+        let Pos { seg, off } = self.caret;
+        let text = &self.doc.get(seg).text;
+        let n = notation::parse(text).tokens.len();
+        let (gap, partway) = notation::gap(text, off);
+        let at = |gap| Pos {
+            seg,
+            off: notation::gap_offset(text, gap),
+        };
+        let pos = if self.inside {
+            self.stepped(forward)
+        } else if forward && gap < n {
+            at(notation::run_gap(text, gap, true))
+        } else if !forward && partway {
+            at(notation::run_gap(text, gap + 1, false))
+        } else if !forward && gap > 0 {
+            at(notation::run_gap(text, gap, false))
+        } else {
+            self.stepped(forward)
+        };
+        self.move_caret(pos, extend);
+    }
+    /// Moves the caret to the end of its segment, or its start going
+    /// backwards, or else to that of the next segment along the path.
+    pub fn step_segment(&mut self, forward: bool, extend: bool) {
+        let path = self.doc.path(self.tip);
+        let Pos { seg, off } = self.caret;
+        let i = path.iter().position(|s| *s == seg).expect("caret on path");
+        let end = |seg| {
+            let text = &self.doc.get(seg).text;
+            let n = notation::parse(text).tokens.len();
+            Pos {
+                seg,
+                off: notation::gap_offset(text, n),
+            }
+        };
+        let pos = if forward {
+            if self.inside || off < end(seg).off {
+                end(seg)
+            } else {
+                path.get(i + 1).map_or(self.caret, |&next| end(next))
+            }
+        } else if off > 0 && !self.inside {
+            Pos { seg, off: 0 }
+        } else {
+            let prev = path[..i].last().copied().unwrap_or(seg);
+            Pos { seg: prev, off: 0 }
+        };
+        self.move_caret(pos, extend);
+    }
     /// Moves the caret to the start or end of the path.
     pub fn step_all(&mut self, forward: bool, extend: bool) {
         let pos = if forward {

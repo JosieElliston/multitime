@@ -555,10 +555,11 @@ pub fn delete(text: &str, caret: usize, forward: bool) -> Option<(String, usize)
 /// What a double click (`Token`) or a triple click (`Run`) selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
-    /// A token, or the whole group of a bracket or separator.
+    /// A token, or the whole group of a bracket or separator. In a comment,
+    /// a word, as in any text.
     Token,
-    /// Tokens up to the nearest bracket, separator, comment or line break, or a
-    /// group's insides.
+    /// Tokens up to the nearest bracket, separator or line break, or a group's
+    /// insides.
     Run,
 }
 
@@ -636,20 +637,58 @@ pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
         });
     }
     let span = tokens[index].span.clone();
-    if unit == Unit::Token {
-        return Some(span);
+    match unit {
+        Unit::Token if tokens[index].kind == TokenKind::Comment && span.contains(&off) => {
+            Some(word_at(text, span, off))
+        }
+        Unit::Token => Some(span),
+        Unit::Run => {
+            let (lo, hi) = run_of(text, &tokens, &groups, index);
+            Some(tokens[lo].span.start..tokens[hi].span.end)
+        }
     }
-    // Not a bracket, even a nested NISS one (an error), nor a comment.
+}
+
+/// The word at `off` within `within`: a run of letters and digits, or of
+/// whitespace, or else one character.
+fn word_at(text: &str, within: Range<usize>, off: usize) -> Range<usize> {
+    let class = |c: char| {
+        if c.is_alphanumeric() || c == '_' {
+            1
+        } else if c.is_whitespace() {
+            2
+        } else {
+            0
+        }
+    };
+    let c = text[off..].chars().next().expect("in a token");
+    if class(c) == 0 {
+        return off..off + c.len_utf8();
+    }
+    let start = text[within.start..off]
+        .char_indices()
+        .rev()
+        .take_while(|(_, d)| class(*d) == class(c))
+        .last()
+        .map_or(off, |(i, _)| within.start + i);
+    let end = text[off..within.end]
+        .char_indices()
+        .find(|(_, d)| class(*d) != class(c))
+        .map_or(within.end, |(i, _)| off + i);
+    start..end
+}
+
+/// Indices of the first and last tokens of the run with token `index` in it.
+/// A bracket or separator is a run of its own.
+fn run_of(text: &str, tokens: &[Token], groups: &[Group], index: usize) -> (usize, usize) {
+    // Not a bracket, even a nested NISS one (an error).
     let plain = |i: usize| {
         let kind = matches!(
             tokens[i].kind,
-            TokenKind::Move | TokenKind::Pause | TokenKind::Error
+            TokenKind::Move | TokenKind::Pause | TokenKind::Error | TokenKind::Comment
         );
         kind && !groups.iter().any(|g| g.members.contains(&i))
     };
-    if !plain(index) {
-        return Some(span);
-    }
     let joined = |a: usize, b: usize| {
         plain(a) && plain(b) && !text[tokens[a].span.end..tokens[b].span.start].contains('\n')
     };
@@ -660,7 +699,26 @@ pub fn unit_at(text: &str, off: usize, unit: Unit) -> Option<Range<usize>> {
     while hi + 1 < tokens.len() && joined(hi, hi + 1) {
         hi += 1;
     }
-    Some(tokens[lo].span.start..tokens[hi].span.end)
+    (lo, hi)
+}
+
+/// The gap that the caret goes to past the next run, or its start going
+/// backwards: from a gap to the gap at the far end of the run of the token
+/// next to it. Past a bracket or separator, that's one token.
+pub fn run_gap(text: &str, gap: usize, forward: bool) -> usize {
+    let tokens = parse(text).tokens;
+    let groups = groups(text, &tokens);
+    if forward {
+        if gap >= tokens.len() {
+            return gap;
+        }
+        run_of(text, &tokens, &groups, gap).1 + 1
+    } else {
+        match gap.checked_sub(1) {
+            Some(i) => run_of(text, &tokens, &groups, i).0,
+            None => 0,
+        }
+    }
 }
 
 /// Grows a range to take in the whole of any group whose bracket it covers,

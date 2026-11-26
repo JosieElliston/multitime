@@ -312,6 +312,17 @@ impl App {
                     repeat,
                     modifiers,
                 } => {
+                    let arrow = matches!(key, Key::ArrowLeft | Key::ArrowRight);
+                    if arrow && !modifiers.ctrl && (modifiers.command || modifiers.alt) {
+                        // By segment or by run.
+                        let forward = key == Key::ArrowRight;
+                        if modifiers.command {
+                            self.session.step_segment(forward, modifiers.shift);
+                        } else {
+                            self.session.step_run(forward, modifiers.shift);
+                        }
+                        return false;
+                    }
                     if modifiers.command {
                         // Select all, and egui's zoom.
                         return matches!(

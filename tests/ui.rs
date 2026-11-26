@@ -675,7 +675,7 @@ fn clicks(h: &mut Harness<'_, App>, n: usize, pos: Pos2, path: &[Pos2]) {
 #[test]
 fn selecting_text_by_units() {
     // Characters are 9 wide, from 23.
-    let mut h = harness("R U' [F, D B] L\nB' D2 // c\n");
+    let mut h = harness("R U' [F, D B] L\nB' D2 // cd\n");
     let x = |i: f32| 27.5 + 9.0 * i;
     let cases: &[(usize, Pos2, &[Pos2], &str)] = &[
         (2, pos2(x(3.0), 50.0), &[], "U'"),
@@ -683,8 +683,10 @@ fn selecting_text_by_units() {
         (2, pos2(x(7.0), 50.0), &[], "[F, D B]"),
         (3, pos2(x(11.0), 50.0), &[], "D B"),
         (3, pos2(x(5.0), 50.0), &[], "F, D B"),
-        (3, pos2(x(1.0), 67.0), &[], "B' D2"),
-        (3, pos2(x(7.0), 67.0), &[], "// c"),
+        (3, pos2(x(1.0), 67.0), &[], "B' D2 // cd"),
+        (3, pos2(x(9.0), 67.0), &[], "B' D2 // cd"),
+        // In a comment, a word.
+        (2, pos2(x(10.0), 67.0), &[], "cd"),
         // A drag extends by units, and takes in whole groups.
         (
             2,
@@ -697,7 +699,7 @@ fn selecting_text_by_units() {
             3,
             pos2(x(9.0), 50.0),
             &[pos2(x(1.0), 67.0)],
-            "[F, D B] L\nB' D2",
+            "[F, D B] L\nB' D2 // cd",
         ),
     ];
     for &(n, pos, path, want) in cases {
@@ -705,7 +707,7 @@ fn selecting_text_by_units() {
         assert_eq!(copied(&mut h), want, "{n} at {pos:?} through {path:?}");
     }
     shot(&mut h, "units");
-    assert_eq!(file(&h), "R U' [F, D B] L\nB' D2 // c\n");
+    assert_eq!(file(&h), "R U' [F, D B] L\nB' D2 // cd\n");
 }
 
 #[test]
@@ -726,4 +728,26 @@ fn selecting_timeline_by_units() {
         assert_eq!(copied(&mut h), want, "{n} at {pos:?} through {path:?}");
     }
     assert_eq!(file(&h), "R U [F, D] B\n>\n  L\n");
+}
+
+#[test]
+fn twist_mode_runs_and_segments() {
+    let mut h = harness("R U [F, D] B\n>\n  L x\n");
+    let caret = |h: &Harness<'_, App>| {
+        let s = &h.state().session;
+        (s.doc().get(s.caret().seg).text.clone(), s.caret().off)
+    };
+    // Twist mode starts at the end of the path.
+    key(&mut h, Modifiers::COMMAND, Key::ArrowLeft);
+    assert_eq!(caret(&h), ("L x".into(), 0));
+    key(&mut h, Modifiers::COMMAND, Key::ArrowLeft);
+    assert_eq!(caret(&h).1, 0);
+    key(&mut h, Modifiers::ALT, Key::ArrowRight);
+    assert_eq!(caret(&h).1, 3);
+    key(&mut h, Modifiers::ALT | Modifiers::SHIFT, Key::ArrowRight);
+    key(&mut h, Modifiers::ALT | Modifiers::SHIFT, Key::ArrowRight);
+    assert_eq!(copied(&mut h), " [F");
+    key(&mut h, Modifiers::COMMAND, Key::ArrowRight);
+    assert_eq!(caret(&h).1, 12);
+    assert_eq!(file(&h), "R U [F, D] B\n>\n  L x\n");
 }
