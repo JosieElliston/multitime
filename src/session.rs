@@ -1633,6 +1633,14 @@ impl Session {
         }
         Some(out)
     }
+    /// STM of the selected text, or `None` without a selection or with
+    /// `>`s selected.
+    pub fn selection_stm(&self) -> Option<u32> {
+        if self.selected_branches().is_some() {
+            return None;
+        }
+        self.copy().map(|t| notation::stm(&t))
+    }
     /// Copies and deletes the selection.
     pub fn cut(&mut self) -> Option<String> {
         let out = self.copy()?;

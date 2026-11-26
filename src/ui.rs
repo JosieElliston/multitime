@@ -1342,6 +1342,15 @@ impl App {
             r.on_hover_text_at_pointer(egui::RichText::new(hover_text(text, pos.off)).monospace());
             None
         });
+        if let Some(n) = self.session.selection_stm() {
+            let painter = ui.painter();
+            let color = ui.visuals().text_color();
+            let galley = painter.layout_no_wrap(format!("{n} STM"), FONT, color);
+            let corner = action.inner_rect.right_bottom() - vec2(10.0, 6.0);
+            let rect = Align2::RIGHT_BOTTOM.anchor_size(corner, galley.size());
+            painter.rect_filled(rect.expand(3.0), 3.0, ui.visuals().panel_fill);
+            painter.galley(rect.min, galley, color);
+        }
         if let Some(action) = action.inner {
             match action {
                 TimelineAction::Go(pos) => self.session.go_to_on_timeline(pos),

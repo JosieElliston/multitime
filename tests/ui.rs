@@ -1127,3 +1127,20 @@ fn tab_types_four_spaces_in_text_mode() {
     key(&mut h, Modifiers::NONE, Key::Tab);
     assert_eq!(file(&h), "    R     \n");
 }
+
+#[test]
+fn timeline_shows_the_selections_stm() {
+    let mut h = harness("x R [U, F]\n");
+    let shown = |h: &Harness<'_, App>| {
+        h.output().shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text().ends_with(" STM") => {
+                Some(t.galley.text().to_owned())
+            }
+            _ => None,
+        })
+    };
+    assert_eq!(shown(&h), None);
+    key(&mut h, Modifiers::SHIFT, Key::Home);
+    assert_eq!(shown(&h).as_deref(), Some("5 STM"));
+    shot(&mut h, "stm");
+}

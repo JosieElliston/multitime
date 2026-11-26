@@ -713,6 +713,64 @@ pub fn comment_tokens(text: &str, span: &Range<usize>) -> Vec<Token> {
         .collect()
 }
 
+/// Slice turn metric, with no cancellations: rotations are free, and other
+/// moves are one each. Groups count as written out, so `[R, U]2` is 8.
+pub fn stm(text: &str) -> u32 {
+    struct Frame {
+        lhs: Option<(char, u32)>,
+        n: u32,
+    }
+    /// The count of the innermost open group, or the top level.
+    fn acc<'a>(stack: &'a mut [Frame], top: &'a mut u32) -> &'a mut u32 {
+        stack.last_mut().map_or(top, |f| &mut f.n)
+    }
+    let mut top = 0;
+    let mut stack: Vec<Frame> = vec![];
+    // The group that closed last, to repeat by its multiplier.
+    let mut closed = 0;
+    for t in parse(text).tokens {
+        let word = &text[t.span.clone()];
+        match t.kind {
+            TokenKind::Move => {
+                let perm = parse_move(word).expect("a move");
+                *acc(&mut stack, &mut top) += u32::from(!perm.is_solved());
+            }
+            // Including a nested NISS's, which is an error.
+            TokenKind::Open | TokenKind::Error if opener(word).is_some() => {
+                stack.push(Frame { lhs: None, n: 0 })
+            }
+            TokenKind::Sep => {
+                if let Some(f) = stack.last_mut() {
+                    f.lhs = Some((word.chars().next().expect("a char"), f.n));
+                    f.n = 0;
+                }
+            }
+            TokenKind::Close { .. } | TokenKind::BadClose => {
+                if let Some(f) = stack.pop() {
+                    closed = match f.lhs {
+                        Some((',', a)) => 2 * (a + f.n),
+                        Some((_, a)) => 2 * a + f.n,
+                        None => f.n,
+                    };
+                    *acc(&mut stack, &mut top) += closed;
+                }
+            }
+            TokenKind::Multiplier => {
+                let n = parse_multiplier(word).map_or(1, i32::unsigned_abs);
+                let acc = acc(&mut stack, &mut top);
+                *acc = (*acc + closed * n).saturating_sub(closed);
+            }
+            _ => {}
+        }
+    }
+    // Unclosed groups play what they have so far.
+    while let Some(f) = stack.pop() {
+        let n = f.lhs.map_or(0, |(_, a)| a) + f.n;
+        *acc(&mut stack, &mut top) += n;
+    }
+    top
+}
+
 /// Spans of tokens, with each comment as its `//` and then its insides as
 /// tokens, for moving by token in text.
 pub fn fine_spans(text: &str) -> Vec<Range<usize>> {

@@ -1920,3 +1920,30 @@ fn toggling_comments() {
     s.undo();
     assert_eq!(s.doc().to_file(), "R U\n>\n  F D\n");
 }
+
+#[test]
+fn counting_stm() {
+    for (text, want) in [
+        ("R U2 F'", 3),
+        ("M E2 S' x y2 z' @R", 3),
+        ("Rw r 2-3R 1-3R R4", 3),
+        ("(R U)3", 6),
+        ("(R U)0 F", 1),
+        ("[R, U]", 4),
+        ("[R, U]2'", 8),
+        ("[R U: F]", 5),
+        ("[R: [U, F]]", 6),
+        ("^(R U) F", 3),
+        ("R // U F\n. D", 2),
+        // Lenient: partial groups count as far as they go.
+        ("[R U: F", 3),
+        ("R U] F)2", 3),
+        ("^(R ^(U) F)", 3),
+    ] {
+        assert_eq!(stm(text), want, "{text}");
+    }
+    let mut s = Session::new(Doc::from_file("R U\n>\n  F [R, U]2\n>\n  B\n").unwrap());
+    assert_eq!(s.selection_stm(), None);
+    s.step_all(false, true);
+    assert_eq!(s.selection_stm(), Some(11));
+}
