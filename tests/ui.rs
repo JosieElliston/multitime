@@ -1171,3 +1171,23 @@ fn light_mode() {
         .count();
     assert_eq!(carets, 2);
 }
+
+#[test]
+fn clicking_a_bubbles_marks() {
+    let mut h = harness("R\n>\n  A\n>\n  B\n>\n  C\n");
+    let active = |h: &Harness<'_, App>| {
+        let s = &h.state().session;
+        (s.doc().get(s.caret().seg).text.clone(), s.inside())
+    };
+    // Marks are 18 wide, from 20 past `TEXT_X`. Anywhere on a `>` puts the
+    // caret after it, whichever branch was active, so clicking again
+    // changes nothing.
+    for (i, want) in [(0.0, "A"), (1.0, "B"), (2.0, "C"), (1.0, "B"), (0.0, "A")] {
+        for dx in [2.0, 9.0, 16.0, 2.0] {
+            let x = TEXT_X + 20.0 + 18.0 * i + dx;
+            clicks(&mut h, 1, pos2(x, 67.0), &[]);
+            assert_eq!(active(&h), (want.to_owned(), Inside::Mark), "{i} {dx}");
+        }
+    }
+    shot(&mut h, "marks");
+}

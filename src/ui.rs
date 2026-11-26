@@ -837,6 +837,14 @@ impl App {
             }
             byte(c)
         };
+        // After the `>` under a point. egui would go to its nearer side, so
+        // that clicking a `>` could make the one before it active.
+        let mark_after = |p: Pos2| {
+            let off = char_at(p);
+            text[off..]
+                .starts_with(MARK)
+                .then_some(off + MARK.len_utf8())
+        };
         let unit = if self.press.0 == 2 {
             Unit::Token
         } else {
@@ -907,6 +915,20 @@ impl App {
                 let pos = self.session.at_offset(off).0;
                 self.right_click(pos, Some(off), false);
             }
+        } else if pressed
+            && !shift
+            && self.press.0 == 1
+            && out.response.is_pointer_button_down_on()
+            && let Some(off) = pointer.and_then(mark_after)
+        {
+            // Even if egui's caret is already where it would put it.
+            self.session.set_caret_offset(off);
+            ui.ctx().request_repaint();
+            if self.session.text() != text {
+                ui.ctx().request_discard("switched branches");
+                paint_text(ui, &self.session);
+                return; // the layout is stale
+            }
         } else if let Some(r) = range
             && (byte(r.primary), byte(r.secondary)) != (caret, anchor)
         {
@@ -914,6 +936,8 @@ impl App {
             let mut new = byte(r.primary);
             if !pointer {
                 new = self.session.key_offset(new, r.h_pos.is_some());
+            } else if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                new = mark_after(p).unwrap_or(new);
             }
             let from = byte(r.secondary);
             if r.is_empty() || new == from {
@@ -966,57 +990,31 @@ impl App {
         if out.response.hovered()
             && let Some(p) = ui.input(|i| i.pointer.hover_pos().filter(|_| !i.pointer.any_down()))
         {
-            let off = byte(out.galley.cursor_from_pos(p - out.galley_pos));
+            let off = mark_after(p)
+                .unwrap_or_else(|| byte(out.galley.cursor_from_pos(p - out.galley_pos)));
             *preview = Some(self.session.at_offset(off).0);
         }
 
-        let mut clicked = None;
-        for (seg, rect) in bubbles {
-            self.bubble(ui, rect.left_center(), seg, &mut clicked, preview);
-        }
-        if let Some(seg) = clicked.filter(|_| bubble_click.is_none()) {
-            self.session.enter(seg);
-        }
-    }
-
-    /// Paints a `>` for each branch.
-    fn bubble(
-        &self,
-        ui: &mut Ui,
-        at: Pos2,
-        active: SegId,
-        clicked: &mut Option<SegId>,
-        preview: &mut Option<Pos>,
-    ) {
-        let segs = self.session.doc().siblings(active);
+        // A `>` for each branch, on its `MARK`. The active branch's is the
+        // text color, as on the timeline.
         let p = palette(ui);
-        for (i, &seg) in segs.iter().enumerate() {
-            let center = at + vec2(1.0 + (i as f32 + 0.5) * MARK_WIDTH, 0.0);
-            let rect = Rect::from_center_size(center, vec2(MARK_WIDTH - 5.0, 13.0));
-            let r = ui.interact(rect, Id::unique(("fork mark", seg)), Sense::click());
-            let is_selected = seg == active;
-            // As on the timeline: the active branch's is the text color.
-            let color = if is_selected {
-                ui.visuals().strong_text_color()
-            } else {
-                p.dim
-            };
-            if r.hovered() {
+        for b in self.session.bubbles() {
+            for i in 0..b.n {
+                let x = |off: usize| {
+                    let c = egui::text::CCursor::new(text[..off].chars().count());
+                    out.galley
+                        .pos_from_cursor(c)
+                        .translate(out.galley_pos.to_vec2())
+                };
+                let center = x(b.line + i).center().lerp(x(b.line + i + 1).center(), 0.5);
+                let color = if i == b.active {
+                    ui.visuals().strong_text_color()
+                } else {
+                    p.dim
+                };
                 ui.painter()
-                    .rect_filled(rect, 3.0, p.dim.gamma_multiply(0.25));
+                    .text(center, Align2::CENTER_CENTER, ">", FONT, color);
             }
-            ui.painter()
-                .text(center, Align2::CENTER_CENTER, ">", FONT, color);
-            if r.clicked() {
-                *clicked = Some(seg);
-            }
-            if r.hovered() && !is_selected {
-                *preview = Some(self.session.doc().end(seg));
-            }
-            r.on_hover_text(match self.session.doc().get(seg).text.as_str() {
-                "" => "(empty)",
-                s => s,
-            });
         }
     }
 

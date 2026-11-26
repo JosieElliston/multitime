@@ -49,7 +49,7 @@ the caret can go into a bubble, before its first `>` or after one of them, and w
 
 in twist mode and on the timeline, a branch starts right after its `>`, rather than at the start of its first line.
 
-cmd+[ and cmd+], or clicking a `>`, also switch branches.
+cmd+[ and cmd+] also switch branches, and so does clicking a `>`, which puts the caret after it, wherever on it the click is.
 
 ## mouse
 
