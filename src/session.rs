@@ -487,16 +487,11 @@ impl Session {
     /// that covers it. Otherwise, toward the caret's end (or either way with
     /// no selection, or one that a click made), it grows, and toward the
     /// anchor's, it shrinks. With `runs`, as in twist mode, a run of moves on
-    /// one line counts as one. In a bubble, it's Shift+Cmd+arrow's
-    /// `step_line`. In twist mode, right after a `>` is the branch's start,
-    /// not in the bubble.
+    /// one line counts as one. Right after a `>` is the branch's start, as
+    /// on the timeline. Before a bubble's first `>`, or with `>`s selected,
+    /// it's Shift+Cmd+arrow's `step_line`.
     pub fn select_by_meaning(&mut self, forward: bool, runs: bool) {
-        let in_bubble = if runs {
-            self.at_start()
-        } else {
-            self.in_bubble()
-        };
-        if in_bubble || self.bubble_selection() {
+        if self.at_start() || self.bubble_selection() {
             self.step_line(forward, true);
             return;
         }
@@ -519,7 +514,9 @@ impl Session {
         let semantic = if lo == hi {
             sel.lo == sel.hi
         } else {
-            model.span(sel) == (lo, hi)
+            // A comment's span can end in spaces.
+            let (s, e) = model.span(sel);
+            model.trim(s, e) == (lo, hi)
         };
         let oriented = a != c && self.clicked != Some((self.anchor(), self.caret));
         let (new, head) = if !semantic {

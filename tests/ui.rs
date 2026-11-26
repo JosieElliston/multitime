@@ -1079,9 +1079,9 @@ fn shift_arrows_at_a_bubbles_ends_select_it() {
         h.run_steps(3);
         key(&mut h, Modifiers::SHIFT, arrow);
         assert_eq!(copied(&mut h), ">\n  D\n>\n  F\n>\n  L\n", "{arrow:?}");
-        // And Shift+Option, like Shift+Cmd.
+        // And Shift+Option before the first `>`, like Shift+Cmd.
         let s = &mut h.state_mut().session;
-        s.set_caret_offset(b.line + 1);
+        s.set_caret_offset(b.line);
         h.run_steps(3);
         key(&mut h, Modifiers::SHIFT | Modifiers::ALT, Key::ArrowRight);
         key(&mut h, Modifiers::SHIFT | Modifiers::ALT, Key::ArrowRight);

@@ -1686,8 +1686,8 @@ fn selections_by_meaning_stay_semantic() {
 fn selecting_by_meaning_in_a_bubble() {
     let doc = Doc::from_file("R U\n>\n  D\n>\n  F\n>\n  L\n").unwrap();
     let b = Session::new(doc.clone()).bubbles()[0].clone();
-    // In text, Shift+Option+arrows on a bubble's line are Shift+Cmd+arrows.
-    for off in b.marks() {
+    // Before a bubble's first `>`, Shift+Option+arrows are Shift+Cmd+arrows.
+    for off in [b.line] {
         for keys in ["<", ">", "<<", ">>", "<>", "><", ">>>"] {
             let mut s = Session::new(doc.clone());
             s.set_caret_offset(off);
@@ -1703,11 +1703,22 @@ fn selecting_by_meaning_in_a_bubble() {
             );
         }
     }
-    // In twist mode, right after a `>` is the branch's start.
-    let mut s = Session::new(doc.clone());
-    s.set_caret_offset(b.line + 2);
-    s.select_by_meaning(true, true);
-    assert_eq!(shown(&s), "R U\n>>>\n«F»");
+    // Right after a `>` is the branch's start, as on the timeline.
+    for runs in [false, true] {
+        let mut s = Session::new(doc.clone());
+        s.set_caret_offset(b.line + 2);
+        s.select_by_meaning(true, runs);
+        assert_eq!(shown(&s), "R U\n>>>\n«F»");
+        s.select_by_meaning(false, runs);
+        assert_eq!(shown(&s), "R U|\n>>>\nF");
+        s.select_by_meaning(false, runs);
+        let want = if runs {
+            "«R U»\n>>>\nF"
+        } else {
+            "R «U»\n>>>\nF"
+        };
+        assert_eq!(shown(&s), want);
+    }
 
     // Shift+arrow at the end of a bubble's line selects all of it, and
     // elsewhere doesn't.
@@ -1723,5 +1734,56 @@ fn selecting_by_meaning_in_a_bubble() {
         let mut s = Session::new(doc.clone());
         s.set_caret_offset(off);
         assert!(!s.select_bubble_at_edge(forward), "{off} {forward}");
+    }
+}
+
+#[test]
+fn growing_by_meaning_reaches_everything() {
+    // Including past a comment that ends in a space.
+    let file = "// a\nF [R: U]\n// b \n>\n  // c\n  R F'\n  >\n    R U\n  >\n    U\n>\n  R U\n";
+    let mut rng = Rng(99);
+    let mut texts = vec![Doc::from_file(file).unwrap()];
+    for _ in 0..300 {
+        let mut t = rng.text(14).replace('>', "");
+        for _ in 0..rng.below(3) {
+            let at = rng.off(&t);
+            t.insert_str(at, " > ");
+        }
+        texts.push(Doc::new(&t));
+    }
+    for doc in texts {
+        let s0 = Session::new(doc);
+        let text = s0.text();
+        for off in (0..=text.len()).filter(|o| text.is_char_boundary(*o)) {
+            for (forward, runs) in [(true, false), (false, false), (true, true), (false, true)] {
+                let mut s = s0.clone();
+                s.set_caret_offset(off);
+                if s.inside() == Inside::Start {
+                    continue;
+                }
+                let mut last = None;
+                for _ in 0..100 {
+                    s.select_by_meaning(forward, runs);
+                    let now = (s.anchor_offset(), s.caret_offset());
+                    if Some(now) == last {
+                        break;
+                    }
+                    last = Some(now);
+                }
+                let (a, c) = last.unwrap();
+                let (lo, hi) = (a.min(c), a.max(c));
+                for seg in s.doc().path(s.tip()) {
+                    let t = &s.doc().get(seg).text;
+                    for tok in parse(t).tokens {
+                        let at = |off| s.offset_of(Pos { seg, off }).unwrap();
+                        assert!(
+                            lo <= at(tok.span.start) && at(tok.span.end) <= hi,
+                            "{:?} from {off} {forward} {runs}: {lo}..{hi}",
+                            s0.doc().to_file()
+                        );
+                    }
+                }
+            }
+        }
     }
 }
