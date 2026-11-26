@@ -2,7 +2,7 @@
 F' [R U: R' U']
 [
   R U:
-  R' U'
+  [R', U']
 ]
 // aset tesa 
 >
