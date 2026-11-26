@@ -751,3 +751,45 @@ fn twist_mode_runs_and_segments() {
     assert_eq!(caret(&h).1, 12);
     assert_eq!(file(&h), "R U [F, D] B\n>\n  L x\n");
 }
+
+#[test]
+fn selection_drawn_while_dragging_by_units() {
+    // A triple click and hold: egui would select the whole line, but the
+    // run ends at the bracket, and that's what's drawn, before release.
+    let mut h = harness("R U [F, D] B\n");
+    let x = |i: f32| 27.5 + 9.0 * i;
+    let pos = pos2(x(0.0), 50.0);
+    h.run_steps(30);
+    h.event(Event::PointerMoved(pos));
+    h.run_steps(1);
+    for pressed in [true, false, true, false, true] {
+        h.event(Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.run_steps(1);
+    }
+    let image = h.render().unwrap();
+    let selection = egui::Visuals::dark().selection.bg_fill;
+    // Above the glyphs, within the row.
+    let at = |i: f32| image.get_pixel(x(i) as u32, 43).0;
+    let is_selected = |i| {
+        let [r, g, b, _] = at(i);
+        egui::Color32::from_rgb(r, g, b) == selection
+    };
+    assert!(is_selected(0.0) && is_selected(2.0), "{:?}", at(0.0));
+    assert!(!is_selected(11.0), "{:?}", at(11.0));
+    shot(&mut h, "held");
+}
+
+#[test]
+fn panels_agree_within_a_frame() {
+    // The views are drawn before the text box, which finds what's hovered,
+    // and they show it in the same frame.
+    let mut h = harness("R U F\n");
+    h.event(Event::PointerMoved(pos2(40.0, 50.0)));
+    h.run_steps(1);
+    assert_eq!(h.query_all_by_label("preview").count(), 2);
+}

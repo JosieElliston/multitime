@@ -175,6 +175,9 @@ impl App {
         // Keep the text box focused. See `Mode`.
         ui.ctx().options_mut(|o| {
             o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
+            // One more pass than egui's default, so that a pass discarded for
+            // an edit can still be redrawn for the state after it. See `drawn`.
+            o.max_passes = std::num::NonZeroUsize::new(3).expect("nonzero");
         });
         ui.memory_mut(|m| m.request_focus(Id::unique(EDITOR)));
         let (delay, dist) = ui.options(|o| {
@@ -215,6 +218,9 @@ impl App {
             .preview
             .filter(|p| !self.ignore_hover && self.is_valid(*p));
         let mut preview = None;
+        // Panels show the state as it was when each was drawn, and a later one
+        // can change it, so redraw everything until nothing does.
+        let drawn = self.drawn();
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("timeline")
             .resizable(true)
@@ -241,10 +247,19 @@ impl App {
                 });
         });
         preview = preview.filter(|_| !self.ignore_hover);
-        if preview != self.preview {
-            self.preview = preview;
+        self.preview = preview;
+        if self.drawn() != drawn {
+            ui.ctx().request_discard("changed after drawing");
+            // In case that's past `max_passes`.
             ui.ctx().request_repaint();
         }
+    }
+
+    /// Everything that the panels draw from, besides the views' orientations.
+    fn drawn(&self) -> impl PartialEq + use<> {
+        let s = &self.session;
+        let pos = (s.tip(), s.caret(), s.anchor(), s.inside());
+        (s.doc().clone(), pos, self.mode, self.preview)
     }
 
     fn is_valid(&self, p: Pos) -> bool {
@@ -476,19 +491,39 @@ impl App {
             state.store(ui.ctx(), id);
         }
 
+        // egui draws the text box from its own selection, before we correct
+        // it, so it draws nothing visible, and `paint_text` draws the rest.
         let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, width: f32| {
             let mut job = highlight(ui, buf.as_str());
             job.wrap.max_width = width;
+            for s in &mut job.sections {
+                s.format.color = Color32::TRANSPARENT;
+            }
             ui.fonts_mut(|f| f.layout_job(job))
         };
-        ui.visuals_mut().text_cursor.stroke = CARET;
-        ui.visuals_mut().text_cursor.blink = false;
-        if self.mode != Mode::Text {
-            ui.visuals_mut().selection.stroke.width = 0.0; // focus border
-        }
+        let visuals = ui.visuals().clone();
+        let w = &visuals.widgets.active;
+        // The focus border, which is otherwise the selection's text color.
+        let border = if self.mode == Mode::Text {
+            visuals.selection.stroke
+        } else {
+            Stroke::NONE
+        };
+        let frame = egui::Frame {
+            fill: visuals.text_edit_bg_color(),
+            corner_radius: w.corner_radius,
+            inner_margin: egui::Margin::symmetric(4, 2) - egui::Margin::from(border.width),
+            outer_margin: egui::Margin::from(-w.expansion),
+            stroke: border,
+            ..Default::default()
+        };
+        let v = ui.visuals_mut();
+        v.text_cursor.stroke = Stroke::NONE;
+        v.selection.bg_fill = Color32::TRANSPARENT;
+        v.selection.stroke.color = Color32::TRANSPARENT;
         let out = egui::TextEdit::multiline(&mut text)
             .id(id)
-            .margin(egui::Margin::symmetric(4, 2))
+            .frame(frame)
             .min_size(vec2(0.0, min_height))
             .desired_width(f32::INFINITY)
             .desired_rows(1)
@@ -501,6 +536,27 @@ impl App {
             })
             .layouter(&mut layouter)
             .show(ui);
+        *ui.visuals_mut() = visuals;
+        let wrap = out.galley.job.wrap.max_width;
+        let paint_text = |ui: &Ui, s: &Session| {
+            let text = s.text();
+            let mut job = highlight(ui, &text);
+            job.wrap.max_width = wrap;
+            let mut galley = ui.fonts_mut(|f| f.layout_job(job));
+            let chars = |off: usize| egui::text::CCursor::new(text[..off].chars().count());
+            let anchor = s.offset_of(s.anchor()).expect("on path");
+            let range = egui::text::CCursorRange::two(chars(anchor), chars(s.caret_offset()));
+            if s.anchor() != s.caret() {
+                egui::text_selection::visuals::paint_text_selection(
+                    &mut galley,
+                    ui.visuals(),
+                    &range,
+                    None,
+                );
+            }
+            let pos = out.galley_pos - vec2(galley.rect.left(), 0.0);
+            ui.painter().galley(pos, galley, Color32::PLACEHOLDER);
+        };
 
         ui.output_mut(|o| {
             for c in &mut o.commands {
@@ -532,6 +588,7 @@ impl App {
                 self.session.edit(&text, caret);
             }
             ui.ctx().request_discard("edited");
+            paint_text(ui, &self.session);
             return; // the rest of the layout is stale
         }
         // Double and triple clicks, and drags after them, select by units.
@@ -585,6 +642,7 @@ impl App {
                 ui.ctx().request_repaint();
                 if self.session.text() != text {
                     ui.ctx().request_discard("switched branches");
+                    paint_text(ui, &self.session);
                     return; // the layout is stale
                 }
             }
@@ -635,9 +693,12 @@ impl App {
             ui.ctx().request_repaint();
             if self.session.text() != text {
                 ui.ctx().request_discard("switched branches");
+                paint_text(ui, &self.session);
                 return; // the layout is stale
             }
         }
+
+        paint_text(ui, &self.session);
 
         // egui only follows carets that it moved itself.
         if moved {
