@@ -34,7 +34,7 @@ esc cycles between focus on the text box and the two puzzles.
 | Option+Left, Option+Right | move by token | move by run (see [mouse](#mouse)) |
 | Shift+Option+Left, Shift+Option+Right | select by meaning (see [selecting by meaning](#selecting-by-meaning)) | the same, but a run counts as one |
 | Cmd+Left, Cmd+Right | go to the ends of the line | go to the ends of the segment |
-| Up, Down | move by line | switch branches at the bubble before the caret |
+| Up, Down | move by line | switch branches at the bubble before the caret, which goes right after the new `>` |
 | Backspace, Delete | delete a character | delete a token (a bracket deletes its whole group) |
 | Option+Backspace, Option+Delete | delete a token | delete a run |
 | Cmd+Backspace, Cmd+Delete | delete to the ends of the line | delete to the ends of the segment |

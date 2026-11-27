@@ -313,6 +313,13 @@ fn bubbles() {
     );
     s.cycle_sibling(1);
     assert_eq!(show(&s), "R\n[|^>>]\nU");
+    // From inside a branch's text, to right after the new branch's `>`.
+    s.go_to(Pos { seg: u, off: 1 });
+    s.cycle_sibling(1);
+    assert_eq!(
+        (show(&s).as_str(), s.inside()),
+        ("R\n[>^>|]\nF\n[^>]\nD", Inside::Mark)
+    );
 
     // Backspace in it deletes a branch.
     let mut s = full.clone();

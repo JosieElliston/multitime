@@ -642,19 +642,21 @@ impl Session {
     }
 
     /// Switches branches at the bubble before the caret, which goes to the start
-    /// of the new branch.
+    /// of the new branch: right after its `>`, or before the first `>` if it
+    /// was there.
     pub fn cycle_sibling(&mut self, delta: isize) {
         let seg = self.caret.seg;
         let sibs = self.doc.siblings(seg);
         let i = sibs.iter().position(|s| *s == seg).expect("is own sibling");
         let j = (i as isize + delta).rem_euclid(sibs.len() as isize) as usize;
         if i != j {
-            let inside = self.inside;
-            self.go_to(Pos {
-                seg: sibs[j],
-                off: 0,
-            });
-            self.inside = inside;
+            // Right after the new branch's `>`, its start as on the timeline,
+            // unless the caret was before the bubble's first `>`.
+            let start = self.inside == Inside::Start;
+            self.enter(sibs[j]);
+            if start {
+                self.inside = Inside::Start;
+            }
         }
     }
 
